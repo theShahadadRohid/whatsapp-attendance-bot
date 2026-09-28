@@ -33,8 +33,39 @@ app.get("/webhook", (req, res) => {
 
 // WhatsApp webhook events
 app.post("/webhook", (req, res) => {
-  console.log("WhatsApp webhook received:");
-  console.log(JSON.stringify(req.body, null, 2));
+  const entry = req.body?.entry?.[0];
+  const change = entry?.changes?.[0];
+  const value = change?.value;
+
+  const message = value?.messages?.[0];
+
+  // No message in this webhook
+  if (!message) {
+    return res.sendStatus(200);
+  }
+
+  const from = message.from;
+  const messageId = message.id;
+  const messageTimestamp = message.timestamp;
+  const messageType = message.type;
+  const text = message.text?.body?.trim();
+
+  console.log("WhatsApp message received:");
+  console.log({
+    from,
+    messageId,
+    messageTimestamp,
+    messageType,
+    text,
+  });
+
+  if (messageType === "text" && text?.toUpperCase() === "CHECK IN") {
+    const checkInTime = new Date();
+
+    console.log("CHECK IN detected!");
+    console.log("Employee:", from);
+    console.log("Check-in time:", checkInTime.toISOString());
+  }
 
   // Always respond quickly to Meta
   res.sendStatus(200);
