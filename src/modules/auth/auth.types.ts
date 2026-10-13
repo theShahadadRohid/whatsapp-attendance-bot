@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import type { AdminRole } from "./admin.model.js";
 
 export interface AuthenticatedUser {
@@ -5,12 +6,6 @@ export interface AuthenticatedUser {
   role: AdminRole;
 }
 
-declare global {
-  namespace Express {
-    interface Request {
-      auth?: AuthenticatedUser;
-    }
-  }
-}
-
-export {};
+export type AuthenticatedRequest = Request & {
+  auth?: AuthenticatedUser;
+};
