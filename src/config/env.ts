@@ -25,6 +25,12 @@ const envSchema = z.object({
 
   API_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900000),
 
+  ALLOW_DATABASE_DISCONNECTED: z
+  .enum(["true", "false"])
+  .default("false")
+  .transform((value) => value === "true"),
+
+
   MONGODB_URI: optionalString,
 
   WHATSAPP_VERIFY_TOKEN: optionalString,
