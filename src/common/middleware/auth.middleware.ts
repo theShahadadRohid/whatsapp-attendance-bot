@@ -5,6 +5,8 @@ import { AppError } from "../../common/errors/app-error.js";
 import { env } from "../../config/env.js";
 import { APP_NAME } from "../../constants/app.constants.js";
 import { ADMIN_ROLES, AdminRole } from "../../modules/auth/admin.model.js";
+import { AuthenticatedRequest } from "../../modules/auth/auth.types.js";
+
 
 interface AccessTokenPayload extends JwtPayload {
   sub: string;
@@ -12,6 +14,7 @@ interface AccessTokenPayload extends JwtPayload {
 }
 
 export const requireAuth: RequestHandler = (req, _res, next) => {
+  const authenticatedReq = req as AuthenticatedRequest;
   const authorization = req.headers.authorization;
 
   if (!authorization?.startsWith("Bearer ")) {
@@ -47,7 +50,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
 
     const payload = decoded as AccessTokenPayload;
 
-    req.auth = {
+    authenticatedReq.auth = {
       adminId: payload.sub,
       role: payload.role
     };
@@ -65,13 +68,16 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
 };
 
 export const requireSuperAdmin: RequestHandler = (req, _res, next) => {
-  if (!req.auth) {
+  const authenticatedReq = req as AuthenticatedRequest;
+  const user = authenticatedReq.auth;
+
+  if (!user) {
     return next(
       new AppError("Authentication required.", 401, "UNAUTHENTICATED")
     );
   }
 
-  if (req.auth.role !== "super_admin") {
+  if (user.role !== "super_admin") {
     return next(
       new AppError("Insufficient permissions.", 403, "FORBIDDEN")
     );

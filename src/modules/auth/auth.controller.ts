@@ -1,5 +1,7 @@
 import type { RequestHandler } from "express";
+
 import { loginAdmin } from "./auth.service.js";
+import type { AuthenticatedRequest } from "./auth.types.js";
 
 export const login: RequestHandler = async (req, res) => {
   const result = await loginAdmin(req.body);
@@ -11,7 +13,10 @@ export const login: RequestHandler = async (req, res) => {
 };
 
 export const getCurrentAdmin: RequestHandler = (req, res) => {
-  if (!req.auth) {
+  const authenticatedReq = req as AuthenticatedRequest;
+  const user = authenticatedReq.auth;
+
+  if (!user) {
     res.status(401).json({
       success: false,
       error: {
@@ -25,8 +30,8 @@ export const getCurrentAdmin: RequestHandler = (req, res) => {
   res.status(200).json({
     success: true,
     data: {
-      id: req.auth.adminId,
-      role: req.auth.role
+      id: user.adminId,
+      role: user.role
     }
   });
 };
