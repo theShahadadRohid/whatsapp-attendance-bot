@@ -25,6 +25,8 @@ const envSchema = z.object({
 
   API_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900000),
 
+  JWT_SECRET: z.string().min(32),
+
   ALLOW_DATABASE_DISCONNECTED: z
   .enum(["true", "false"])
   .default("false")
