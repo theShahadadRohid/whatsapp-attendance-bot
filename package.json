@@ -12,7 +12,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:admin": "tsx scripts/seed-admin.ts",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json"
   },
   "keywords": [],
   "author": "",
