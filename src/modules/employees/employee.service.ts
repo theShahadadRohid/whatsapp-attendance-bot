@@ -2,35 +2,92 @@
 import { EmployeeModel } from "./employee.model.js";
 import type {
   CreateEmployeeInput,
-  UpdateEmployeeInput
+  UpdateEmployeeInput,
 } from "./employee.types.js";
 import { AppError } from "../../common/errors/app-error.js";
 
-export async function createEmployee(input: CreateEmployeeInput) {
-  const existingEmployee = await EmployeeModel.findOne({
-    $or: [
-      { employeeCode: input.employeeCode },
-      { phoneNumber: input.phoneNumber }
-    ]
-  }).lean();
+function getDuplicateEmployeeError(error: unknown): AppError | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    error.code !== 11000
+  ) {
+    return null;
+  }
 
-  if (existingEmployee) {
-    if (existingEmployee.employeeCode === input.employeeCode) {
-      throw new AppError(
-        "An employee with this employee code already exists.",
-        409,
-        "EMPLOYEE_CODE_EXISTS"
-      );
-    }
+  const keyPattern =
+    "keyPattern" in error &&
+    typeof error.keyPattern === "object" &&
+    error.keyPattern !== null
+      ? error.keyPattern
+      : {};
 
-    throw new AppError(
-      "An employee with this phone number already exists.",
+  const keyValue =
+    "keyValue" in error &&
+    typeof error.keyValue === "object" &&
+    error.keyValue !== null
+      ? error.keyValue
+      : {};
+
+  if ("employeeCode" in keyPattern || "employeeCode" in keyValue) {
+    return new AppError(
+      "An employee with this employee code already exists.",
       409,
-      "EMPLOYEE_PHONE_EXISTS"
+      "EMPLOYEE_CODE_EXISTS",
     );
   }
 
-  return EmployeeModel.create(input);
+  if ("phoneNumber" in keyPattern || "phoneNumber" in keyValue) {
+    return new AppError(
+      "An employee with this phone number already exists.",
+      409,
+      "EMPLOYEE_PHONE_EXISTS",
+    );
+  }
+
+  return null;
+}
+
+function handleDuplicateEmployeeError(error: unknown): never {
+  const duplicateError = getDuplicateEmployeeError(error);
+
+  if (duplicateError) {
+    throw duplicateError;
+  }
+
+  throw error;
+}
+
+export async function createEmployee(input: CreateEmployeeInput) {
+  try {
+    const existingEmployee = await EmployeeModel.findOne({
+      $or: [
+        { employeeCode: input.employeeCode },
+        { phoneNumber: input.phoneNumber },
+      ],
+    }).lean();
+
+    if (existingEmployee) {
+      if (existingEmployee.employeeCode === input.employeeCode) {
+        throw new AppError(
+          "An employee with this employee code already exists.",
+          409,
+          "EMPLOYEE_CODE_EXISTS",
+        );
+      }
+
+      throw new AppError(
+        "An employee with this phone number already exists.",
+        409,
+        "EMPLOYEE_PHONE_EXISTS",
+      );
+    }
+
+    return await EmployeeModel.create(input);
+  } catch (error) {
+    handleDuplicateEmployeeError(error);
+  }
 }
 
 export async function getEmployeeById(id: string) {
@@ -60,7 +117,7 @@ export async function listEmployees(options?: {
       .limit(limit)
       .lean(),
 
-    EmployeeModel.countDocuments(filter)
+    EmployeeModel.countDocuments(filter),
   ]);
 
   return {
@@ -69,36 +126,59 @@ export async function listEmployees(options?: {
       total,
       limit,
       skip,
-      hasMore: skip + employees.length < total
-    }
+      hasMore: skip + employees.length < total,
+    },
   };
 }
 
 export async function updateEmployee(
   id: string,
-  input: UpdateEmployeeInput
+  input: UpdateEmployeeInput,
 ) {
-  const employee = await EmployeeModel.findByIdAndUpdate(
-    id,
-    { $set: input },
-    {
-      new: true,
-      runValidators: true
+  try {
+    if (input.phoneNumber) {
+      const existingEmployee = await EmployeeModel.findOne({
+        phoneNumber: input.phoneNumber,
+        _id: { $ne: id },
+      }).lean();
+
+      if (existingEmployee) {
+        throw new AppError(
+          "An employee with this phone number already exists.",
+          409,
+          "EMPLOYEE_PHONE_EXISTS",
+        );
+      }
     }
-  ).lean();
 
-  if (!employee) {
-    throw new AppError("Employee not found.", 404, "EMPLOYEE_NOT_FOUND");
+    const employee = await EmployeeModel.findByIdAndUpdate(
+      id,
+      { $set: input },
+      {
+        new: true,
+        runValidators: true,
+      },
+    ).lean();
+
+    if (!employee) {
+      throw new AppError(
+        "Employee not found.",
+        404,
+        "EMPLOYEE_NOT_FOUND",
+      );
+    }
+
+    return employee;
+  } catch (error) {
+    handleDuplicateEmployeeError(error);
   }
-
-  return employee;
 }
 
 export async function deactivateEmployee(id: string) {
   const employee = await EmployeeModel.findByIdAndUpdate(
     id,
     { $set: { isActive: false } },
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   ).lean();
 
   if (!employee) {

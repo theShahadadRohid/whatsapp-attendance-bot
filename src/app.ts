@@ -18,6 +18,7 @@ import { errorHandler } from "./common/errors/error-handler.js";
 import { logger } from "./common/logging/logger.js";
 import { notFoundMiddleware } from "./common/middleware/not-found.middleware.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
+import { employeeRouter } from "./modules/employees/employee.routes.js";
 
 export const app = express();
 
@@ -74,6 +75,7 @@ const apiRateLimiter = rateLimit({
 app.use(API_PREFIX, apiRateLimiter);
 
 app.use(`${API_PREFIX}/auth`, authRouter);
+app.use(`${API_PREFIX}/employees`, employeeRouter);
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({
