@@ -1,4 +1,4 @@
-
+import { logger } from "../../src/common/logging/logger.js";
 import { createHmac } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -161,5 +161,46 @@ describe("WhatsApp webhook", () => {
 
       expect(response.status).toBe(400);
     });
+
+    it("parses incoming messages after verifying the signature", async () => {
+  const rawBody = JSON.stringify({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messages: [
+                {
+                  from: "8801712345678",
+                  id: "wamid.test123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  const response = await request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
+
+  expect(response.status).toBe(200);
+
+  expect(logger.info).toHaveBeenCalledWith(
+    { messageCount: 1 },
+    "Verified WhatsApp webhook received.",
+  );
+});
   });
 });

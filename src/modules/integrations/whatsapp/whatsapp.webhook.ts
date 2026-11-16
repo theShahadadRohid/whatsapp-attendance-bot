@@ -1,4 +1,4 @@
-
+import { parseWhatsAppMessages } from "./whatsapp.payload.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
 
@@ -67,6 +67,7 @@ function isValidSignature(
  * Receives WhatsApp webhook notifications.
  * The raw body is required for signature verification.
  */
+
 whatsappWebhookRouter.post(
   "/",
   express.raw({
@@ -75,7 +76,9 @@ whatsappWebhookRouter.post(
   }),
   (req, res) => {
     if (!env.WHATSAPP_APP_SECRET) {
-      res.status(503).send("WhatsApp webhook signature verification is not configured.");
+      res.status(503).send(
+        "WhatsApp webhook signature verification is not configured.",
+      );
       return;
     }
 
@@ -91,26 +94,33 @@ whatsappWebhookRouter.post(
       return;
     }
 
-    try {
-      const payload: unknown = JSON.parse(req.body.toString("utf8"));
+    let payload: unknown;
 
-      if (
-        typeof payload !== "object" ||
-        payload === null ||
-        !("object" in payload) ||
-        payload.object !== "whatsapp_business_account"
-      ) {
-        res.status(400).send("Invalid WhatsApp webhook payload.");
-        return;
-      }
+    try {
+      payload = JSON.parse(req.body.toString("utf8"));
     } catch {
       res.status(400).send("Invalid JSON payload.");
       return;
     }
 
-    logger.info("Verified WhatsApp webhook received.");
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      !("object" in payload) ||
+      payload.object !== "whatsapp_business_account"
+    ) {
+      res.status(400).send("Invalid WhatsApp webhook payload.");
+      return;
+    }
 
-    // Message processing will be added in the next step.
+    const messages = parseWhatsAppMessages(payload);
+
+    logger.info(
+      { messageCount: messages.length },
+      "Verified WhatsApp webhook received.",
+    );
+
     res.sendStatus(200);
   },
 );
+
