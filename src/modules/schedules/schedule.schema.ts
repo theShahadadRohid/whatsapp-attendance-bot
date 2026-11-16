@@ -16,6 +16,18 @@ const dateSchema = z
     );
   }, "Please provide a valid calendar date.");
 
+function isValidTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const checkInRulesSchema = z.object({
   officeStartTime: timeSchema.optional(),
   onTimeUntil: timeSchema.optional(),
@@ -41,7 +53,16 @@ const absenceRulesSchema = z.object({
 
 export const updateCompanyScheduleSchema = z
   .object({
-    timeZone: z.string().trim().min(1).max(100).optional(),
+    timeZone: z
+  .string()
+  .trim()
+  .min(1, "Timezone is required.")
+  .max(100, "Timezone must not exceed 100 characters.")
+  .refine(
+    isValidTimeZone,
+    "Please provide a valid IANA timezone (e.g. Asia/Dhaka).",
+  )
+  .optional(),
 
     workingDays: z
       .array(z.number().int().min(0).max(6))

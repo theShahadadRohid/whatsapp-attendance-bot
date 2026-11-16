@@ -1,4 +1,3 @@
-
 import mongoose, { Types } from "mongoose";
 import { AppError } from "../../common/errors/app-error";
 import { APP_TIME_ZONE } from "../../constants/app.constants";
@@ -320,6 +319,19 @@ export async function checkOutEmployee(
   return attendance.save();
 }
 
+function isValidCalendarDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+
+  return (
+    Number.isFinite(parsedDate.getTime()) &&
+    parsedDate.toISOString().slice(0, 10) === date
+  );
+}
+
 /**
  * Processes attendance for one company-local calendar date.
  *
@@ -331,12 +343,7 @@ export async function processDailyAttendance(
   targetDate: string,
   processedAt = new Date(),
 ) {
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(targetDate) ||
-    new Date(`${targetDate}T00:00:00.000Z`)
-      .toISOString()
-      .slice(0, 10) !== targetDate
-  ) {
+  if (!isValidCalendarDate(targetDate)) {
     throw new AppError(
       "Invalid attendance date.",
       400,
@@ -498,10 +505,7 @@ interface AttendanceListOptions {
 }
 
 function validateDashboardDate(date: string): void {
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-    new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date
-  ) {
+  if (!isValidCalendarDate(date)) {
     throw new AppError(
       "Invalid attendance date.",
       400,
@@ -534,9 +538,17 @@ export async function getAttendanceDashboard(date?: string) {
     Attendance.find({ date: targetDate }).select("employee status")
   ]);
 
-  const recordedEmployeeIds = new Set(
-    records.map((record) => record.employee.toString()),
-  );
+  const activeEmployeeIds = new Set(
+  employees.map((employee) => employee._id.toString()),
+);
+
+const activeRecords = records.filter((record) =>
+  activeEmployeeIds.has(record.employee.toString()),
+);
+
+const recordedEmployeeIds = new Set(
+  activeRecords.map((record) => record.employee.toString()),
+);
 
   const notCheckedInEmployees = employees.filter(
     (employee) => !recordedEmployeeIds.has(employee._id.toString()),
@@ -544,13 +556,13 @@ export async function getAttendanceDashboard(date?: string) {
 
   return {
     date: targetDate,
-    summary: {
-      totalEmployees: employees.length,
-      present: records.filter((record) => record.status === "present").length,
-      late: records.filter((record) => record.status === "late").length,
-      absent: records.filter((record) => record.status === "absent").length,
-      notCheckedIn: notCheckedInEmployees.length,
-    },
+   summary: {
+  totalEmployees: employees.length,
+  present: activeRecords.filter((record) => record.status === "present").length,
+  late: activeRecords.filter((record) => record.status === "late").length,
+  absent: activeRecords.filter((record) => record.status === "absent").length,
+  notCheckedIn: notCheckedInEmployees.length,
+},
     notCheckedInEmployees,
   };
 }

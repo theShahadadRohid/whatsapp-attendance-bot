@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import {
   checkInEmployee,
   checkOutEmployee,
+  correctAttendance,
   getAttendanceDashboard,
   getAttendanceReviewQueue,
   getEmployeeAttendanceHistory,
@@ -15,6 +16,7 @@ import {
 import type {
   CheckInPayload,
   CheckOutPayload,
+  CorrectAttendancePayload,
 } from "./attendance.schema.js";
 
 export const checkIn: RequestHandler = async (req, res, next) => {
@@ -199,6 +201,39 @@ export const getReviewQueue: RequestHandler = async (
     res.status(200).json({
       message: "Attendance review queue retrieved successfully.",
       data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const correctAttendanceRecord: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const authenticatedRequest = req as AuthenticatedRequest;
+    const adminId = authenticatedRequest.auth?.adminId;
+
+    if (!adminId) {
+      throw new AppError(
+        "Authentication required.",
+        401,
+        "UNAUTHORIZED",
+      );
+    }
+
+    const attendance = await correctAttendance(
+      String(req.params.id),
+      adminId,
+      req.body as CorrectAttendancePayload,
+    );
+
+    res.status(200).json({
+      message: "Attendance record corrected successfully.",
+      data: { attendance },
     });
   } catch (error) {
     next(error);

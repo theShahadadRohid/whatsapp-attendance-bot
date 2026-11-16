@@ -34,6 +34,7 @@ export interface CompanySchedule {
   checkIn: CheckInRules;
   checkOut: CheckOutRules;
   absence: AbsenceRules;
+  lastAttendanceProcessedDate?: string;
 }
 
 export interface CreateHolidayInput {

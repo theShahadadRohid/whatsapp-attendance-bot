@@ -27,38 +27,42 @@ async function startServer(): Promise<void> {
 
   let isShuttingDown = false;
 
-  const shutdown = (signal: NodeJS.Signals): void => {
-    if (isShuttingDown) {
-      return;
-    }
+const shutdown = (signal: NodeJS.Signals): void => {
+  if (isShuttingDown) {
+    return;
+  }
 
-    isShuttingDown = true;
+  isShuttingDown = true;
 
-    logger.info({ signal }, "Graceful shutdown started");
+  logger.info({ signal }, "Graceful shutdown started");
 
-    stopAttendanceScheduler();
+  const schedulerShutdown = stopAttendanceScheduler();
 
-    server.close((error) => {
-      void (async () => {
-        try {
-          await disconnectFromDatabase();
-        } catch (disconnectError) {
-          logger.error(
-            { err: disconnectError },
-            "Failed to disconnect from MongoDB",
-          );
-          process.exitCode = 1;
-        }
+  server.close((error) => {
+    void (async () => {
+      try {
+        // Wait for any ongoing attendance processing to finish.
+        await schedulerShutdown;
 
-        if (error) {
-          logger.error({ err: error }, "HTTP server shutdown failed");
-          process.exitCode = 1;
-        } else {
-          logger.info("HTTP server closed");
-        }
-      })();
-    });
-  };
+        // Disconnect only after the scheduler has stopped.
+        await disconnectFromDatabase();
+      } catch (shutdownError) {
+        logger.error(
+          { err: shutdownError },
+          "Error during application shutdown",
+        );
+        process.exitCode = 1;
+      }
+
+      if (error) {
+        logger.error({ err: error }, "HTTP server shutdown failed");
+        process.exitCode = 1;
+      } else {
+        logger.info("HTTP server closed");
+      }
+    })();
+  });
+};
 
   server.on("error", (error: Error) => {
     logger.fatal({ err: error }, "HTTP server error");

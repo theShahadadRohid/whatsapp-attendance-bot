@@ -19,6 +19,16 @@ import {
   checkOutSchema,
 } from "./attendance.schema.js";
 
+import {
+  correctAttendanceRecord,
+  // Keep all your existing controller imports.
+} from "./attendance.controller.js";
+
+import {
+  correctAttendanceSchema,
+  // Keep your existing schema imports.
+} from "./attendance.schema.js";
+
 export const attendanceRouter = Router();
 
 const requireAttendanceManager: RequestHandler = (
@@ -81,4 +91,10 @@ attendanceRouter.get("/reviews", getReviewQueue);
 attendanceRouter.get(
   "/employees/:employeeId/history",
   getEmployeeHistory,
+);
+
+attendanceRouter.patch(
+  "/:id/correct",
+  validateBody(correctAttendanceSchema),
+  correctAttendanceRecord,
 );
