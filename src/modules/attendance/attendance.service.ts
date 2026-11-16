@@ -2,7 +2,7 @@
 import mongoose, { Types } from "mongoose";
 import { AppError } from "../../common/errors/app-error";
 import { APP_TIME_ZONE } from "../../constants/app.constants";
-import { Employee } from "../employees/employee.model";
+import { EmployeeModel } from "../employees/employee.model";
 import {
   CompanyHoliday,
   CompanySchedule,
@@ -40,8 +40,11 @@ function localDateTimeToUtc(
   time: string,
   timeZone: string,
 ): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const [hour, minute] = time.split(":").map(Number);
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const hour = Number(time.slice(0, 2));
+  const minute = Number(time.slice(3, 5));
 
   const targetUtc = Date.UTC(
     year,
@@ -56,10 +59,12 @@ function localDateTimeToUtc(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const local = getLocalDateTime(new Date(result), timeZone);
-    const [localYear, localMonth, localDay] = local.date
-      .split("-")
-      .map(Number);
-    const [localHour, localMinute] = local.time.split(":").map(Number);
+
+    const localYear = Number(local.date.slice(0, 4));
+    const localMonth = Number(local.date.slice(5, 7));
+    const localDay = Number(local.date.slice(8, 10));
+    const localHour = Number(local.time.slice(0, 2));
+    const localMinute = Number(local.time.slice(3, 5));
 
     const representedUtc = Date.UTC(
       localYear,
@@ -98,7 +103,7 @@ async function getActiveEmployee(employeeId: string) {
     );
   }
 
-  const employee = await Employee.findOne({
+  const employee = await EmployeeModel.findOne({
     _id: employeeId,
     isActive: true,
   });
@@ -357,7 +362,9 @@ export async function processDailyAttendance(
 
   const weekday = new Date(`${targetDate}T00:00:00.000Z`).getUTCDay();
 
-  if (!schedule.workingDays.includes(weekday)) {
+  const workingDays: readonly number[] = schedule.workingDays;
+
+if (!workingDays.includes(weekday)) {
     return {
       date: targetDate,
       skipped: true,
@@ -379,7 +386,7 @@ export async function processDailyAttendance(
     };
   }
 
-  const employees = await Employee.find({ isActive: true }).select("_id");
+  const employees = await EmployeeModel.find({ isActive: true }).select("_id");
 
   let autoCheckedOut = 0;
   let markedAbsent = 0;
