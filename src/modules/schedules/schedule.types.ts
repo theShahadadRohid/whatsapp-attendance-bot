@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 
 export const WORKING_DAYS = [0, 1, 2, 3, 4] as const;
 
@@ -44,4 +45,11 @@ export interface CreateHolidayInput {
 export interface UpdateHolidayInput {
   name?: string;
   description?: string | null;
+}
+
+export interface CompanyHoliday {
+  date: string;
+  name: string;
+  description?: string;
+  createdBy?: Types.ObjectId;
 }

@@ -2,6 +2,7 @@
 import mongoose, { Schema } from "mongoose";
 import type {
   CompanySchedule as CompanyScheduleType,
+  CompanyHoliday as CompanyHolidayType,
 } from "./schedule.types";
 
 const checkInRulesSchema = new Schema(
@@ -140,7 +141,7 @@ const companyScheduleSchema = new Schema<CompanyScheduleType>(
   },
 );
 
-const companyHolidaySchema = new Schema(
+const companyHolidaySchema = new Schema<CompanyHolidayType>(
   {
     date: {
       type: String,
@@ -175,5 +176,10 @@ export const CompanySchedule =
   mongoose.model<CompanyScheduleType>("CompanySchedule", companyScheduleSchema);
 
 export const CompanyHoliday =
-  mongoose.models.CompanyHoliday ||
-  mongoose.model("CompanyHoliday", companyHolidaySchema);
+  (mongoose.models.CompanyHoliday as
+    | mongoose.Model<CompanyHolidayType>
+    | undefined) ||
+  mongoose.model<CompanyHolidayType>(
+    "CompanyHoliday",
+    companyHolidaySchema,
+  );
