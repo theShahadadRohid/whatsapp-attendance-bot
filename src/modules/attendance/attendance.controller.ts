@@ -6,6 +6,7 @@ import {
   checkInEmployee,
   checkOutEmployee,
   getAttendanceDashboard,
+  getEmployeeAttendanceHistory,
   listAttendanceRecords,
   processDailyAttendance,
   reviewAttendance,
@@ -140,3 +141,36 @@ export const getAttendanceList: RequestHandler = async (
   }
 };
 
+
+export const getEmployeeHistory: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const result = await getEmployeeAttendanceHistory(
+      String(req.params.employeeId),
+      {
+        ...(typeof req.query.from === "string" && {
+          from: req.query.from,
+        }),
+        ...(typeof req.query.to === "string" && {
+          to: req.query.to,
+        }),
+        ...(typeof req.query.page === "string" && {
+          page: req.query.page,
+        }),
+        ...(typeof req.query.limit === "string" && {
+          limit: req.query.limit,
+        }),
+      },
+    );
+
+    res.status(200).json({
+      message: "Employee attendance history retrieved successfully.",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

@@ -7,8 +7,11 @@ import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import {
   checkIn,
   checkOut,
+  getDashboard,
+  getAttendanceList,
   processDaily,
   reviewAutoCheckout,
+  getEmployeeHistory,
 } from "./attendance.controller.js";
 import {
   checkInSchema,
@@ -46,6 +49,13 @@ const requireAttendanceManager: RequestHandler = (
 
 attendanceRouter.use(requireAuth, requireAttendanceManager);
 
+// Dashboard
+attendanceRouter.get("/dashboard", getDashboard);
+
+// Attendance records
+attendanceRouter.get("/records", getAttendanceList);
+
+// Employee check-in/check-out
 attendanceRouter.post(
   "/employees/:employeeId/check-in",
   validateBody(checkInSchema),
@@ -58,6 +68,13 @@ attendanceRouter.post(
   checkOut,
 );
 
+// Daily processing
 attendanceRouter.post("/process/:date", processDaily);
 
+// Auto-checkout review
 attendanceRouter.patch("/:id/review", reviewAutoCheckout);
+
+attendanceRouter.get(
+  "/employees/:employeeId/history",
+  getEmployeeHistory,
+);

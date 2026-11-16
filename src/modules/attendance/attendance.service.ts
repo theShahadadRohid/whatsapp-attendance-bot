@@ -665,3 +665,187 @@ export async function listAttendanceRecords(
     },
   };
 }
+
+
+interface EmployeeAttendanceHistoryOptions {
+  from?: string;
+  to?: string;
+  page?: string;
+  limit?: string;
+}
+
+/**
+ * Returns paginated attendance history for one employee.
+ * Inactive employees' historical records are also supported.
+ */
+export async function getEmployeeAttendanceHistory(
+  employeeId: string,
+  options: EmployeeAttendanceHistoryOptions = {},
+) {
+  if (!isValidObjectId(employeeId)) {
+    throw new AppError(
+      "Invalid employee ID.",
+      400,
+      "INVALID_EMPLOYEE_ID",
+    );
+  }
+
+  const employee = await EmployeeModel.findById(employeeId).select(
+    "_id employeeCode fullName phoneNumber employmentType department isActive",
+  );
+
+  if (!employee) {
+    throw new AppError(
+      "Employee not found.",
+      404,
+      "EMPLOYEE_NOT_FOUND",
+    );
+  }
+
+  if (options.from) {
+    validateDashboardDate(options.from);
+  }
+
+  if (options.to) {
+    validateDashboardDate(options.to);
+  }
+
+  if (options.from && options.to && options.from > options.to) {
+    throw new AppError(
+      "Start date cannot be later than end date.",
+      400,
+      "INVALID_DATE_RANGE",
+    );
+  }
+
+  const page = Number(options.page ?? 1);
+  const limit = Number(options.limit ?? 20);
+
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    throw new AppError(
+      "Invalid pagination parameters.",
+      400,
+      "INVALID_PAGINATION",
+    );
+  }
+
+  const attendanceFilter: {
+    employee: Types.ObjectId;
+    date?: {
+      $gte?: string;
+      $lte?: string;
+    };
+  } = {
+    employee: employee._id,
+  };
+
+  if (options.from || options.to) {
+    attendanceFilter.date = {
+      ...(options.from && { $gte: options.from }),
+      ...(options.to && { $lte: options.to }),
+    };
+  }
+
+  const [records, totalRecords] = await Promise.all([
+    Attendance.find(attendanceFilter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+
+    Attendance.countDocuments(attendanceFilter),
+  ]);
+
+  return {
+    employee,
+    filters: {
+      from: options.from ?? null,
+      to: options.to ?? null,
+    },
+    records,
+    pagination: {
+      page,
+      limit,
+      totalRecords,
+      totalPages: Math.ceil(totalRecords / limit),
+    },
+  };
+}
+
+
+
+interface AttendanceReviewOptions {
+  date?: string;
+  page?: string;
+  limit?: string;
+}
+
+/**
+ * Returns paginated attendance records requiring manager review.
+ */
+export async function getAttendanceReviewQueue(
+  options: AttendanceReviewOptions = {},
+) {
+  if (options.date) {
+    validateDashboardDate(options.date);
+  }
+
+  const page = Number(options.page ?? 1);
+  const limit = Number(options.limit ?? 20);
+
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    throw new AppError(
+      "Invalid pagination parameters.",
+      400,
+      "INVALID_PAGINATION",
+    );
+  }
+
+  const filter: {
+    needsReview: boolean;
+    date?: string;
+  } = {
+    needsReview: true,
+  };
+
+  if (options.date) {
+    filter.date = options.date;
+  }
+
+  const [records, totalRecords] = await Promise.all([
+    Attendance.find(filter)
+      .populate(
+        "employee",
+        "employeeCode fullName phoneNumber employmentType department",
+      )
+      .sort({ date: -1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+
+    Attendance.countDocuments(filter),
+  ]);
+
+  return {
+    filters: {
+      date: options.date ?? null,
+    },
+    records,
+    pagination: {
+      page,
+      limit,
+      totalRecords,
+      totalPages: Math.ceil(totalRecords / limit),
+    },
+  };
+}
