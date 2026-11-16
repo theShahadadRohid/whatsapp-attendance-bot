@@ -187,3 +187,66 @@ export async function deactivateEmployee(id: string) {
 
   return employee;
 }
+
+
+function getPhoneNumberCandidates(phoneNumber: string): string[] {
+  let digits = phoneNumber.replace(/\D/g, "");
+
+  // Convert international dialing prefix to country-code format.
+  if (digits.startsWith("00")) {
+    digits = digits.slice(2);
+  }
+
+  if (!digits) {
+    return [];
+  }
+
+  const candidates = new Set<string>([
+    digits,
+    `+${digits}`,
+  ]);
+
+  // Bangladesh: 8801712345678 -> 01712345678
+  if (digits.startsWith("880")) {
+    const localNumber = `0${digits.slice(3)}`;
+
+    candidates.add(localNumber);
+  }
+
+  // Bangladesh: 01712345678 -> 8801712345678
+  if (digits.startsWith("0")) {
+    const internationalNumber = `880${digits.slice(1)}`;
+
+    candidates.add(internationalNumber);
+    candidates.add(`+${internationalNumber}`);
+  }
+
+  return [...candidates];
+}
+
+export async function findEmployeeByWhatsAppNumber(
+  phoneNumber: string,
+) {
+  const candidates = getPhoneNumberCandidates(phoneNumber);
+
+  if (candidates.length === 0) {
+    return { status: "not_found" as const };
+  }
+
+  const employee = await EmployeeModel.findOne({
+    phoneNumber: { $in: candidates },
+  }).lean();
+
+  if (!employee) {
+    return { status: "not_found" as const };
+  }
+
+  if (!employee.isActive) {
+    return { status: "inactive" as const };
+  }
+
+  return {
+    status: "active" as const,
+    employee,
+  };
+}

@@ -1,9 +1,11 @@
-import { parseWhatsAppMessages } from "./whatsapp.payload.js";
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
 
 import { env } from "../../../config/env.js";
 import { logger } from "../../../common/logging/logger.js";
+import { findEmployeeByWhatsAppNumber } from "../../employees/employee.service.js";
+import { parseWhatsAppMessages } from "./whatsapp.payload.js";
 
 export const whatsappWebhookRouter = Router();
 
@@ -67,14 +69,13 @@ function isValidSignature(
  * Receives WhatsApp webhook notifications.
  * The raw body is required for signature verification.
  */
-
 whatsappWebhookRouter.post(
   "/",
   express.raw({
     type: "application/json",
     limit: "1mb",
   }),
-  (req, res) => {
+  async (req, res) => {
     if (!env.WHATSAPP_APP_SECRET) {
       res.status(503).send(
         "WhatsApp webhook signature verification is not configured.",
@@ -120,7 +121,47 @@ whatsappWebhookRouter.post(
       "Verified WhatsApp webhook received.",
     );
 
+    try {
+      for (const message of messages) {
+        const result = await findEmployeeByWhatsAppNumber(message.from);
+
+        if (result.status === "active") {
+          logger.info(
+            {
+              employeeId: result.employee._id.toString(),
+              employeeCode: result.employee.employeeCode,
+              messageType: message.type,
+            },
+            "WhatsApp message received from registered employee.",
+          );
+
+          continue;
+        }
+
+        if (result.status === "inactive") {
+          logger.info(
+            { from: message.from },
+            "WhatsApp message received from inactive employee.",
+          );
+
+          continue;
+        }
+
+        logger.info(
+          { from: message.from },
+          "WhatsApp message received from unknown contact.",
+        );
+      }
+    } catch (error) {
+      logger.error(
+        { err: error },
+        "Failed to identify WhatsApp message sender.",
+      );
+
+      res.sendStatus(500);
+      return;
+    }
+
     res.sendStatus(200);
   },
 );
-
