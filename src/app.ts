@@ -21,6 +21,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { employeeRouter } from "./modules/employees/employee.routes.js";
 import { scheduleRouter } from "./modules/schedules/schedule.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
+import { whatsappWebhookRouter } from "./modules/integrations/whatsapp/whatsapp.webhook.js";
 
 export const app = express();
 
@@ -64,6 +65,9 @@ app.use(
     },
   }),
 );
+
+// WhatsApp webhook must receive the raw request body for signature verification.
+app.use("/webhooks/whatsapp", whatsappWebhookRouter);
 
 app.use(express.json({ limit: "1mb" }));
 
