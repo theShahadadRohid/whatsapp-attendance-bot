@@ -123,9 +123,9 @@ export async function trackUnknownContact(
         },
       },
       {
-        new: true,
-        runValidators: true,
-      },
+  returnDocument: "after",
+  runValidators: true,
+},
     );
 
     // Someone else updated the record. Read the latest state and retry.

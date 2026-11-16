@@ -1,3 +1,4 @@
+
 import { logger } from "../../src/common/logging/logger.js";
 import { createHmac } from "node:crypto";
 import express from "express";
@@ -9,6 +10,11 @@ const mockEnv = vi.hoisted(() => ({
   WHATSAPP_APP_SECRET: "test-app-secret" as string | undefined,
 }));
 
+const mockServices = vi.hoisted(() => ({
+  findEmployeeByWhatsAppNumber: vi.fn(),
+  trackUnknownContact: vi.fn(),
+}));
+
 vi.mock("../../src/config/env.js", () => ({
   env: mockEnv,
 }));
@@ -16,7 +22,17 @@ vi.mock("../../src/config/env.js", () => ({
 vi.mock("../../src/common/logging/logger.js", () => ({
   logger: {
     info: vi.fn(),
+    error: vi.fn(),
   },
+}));
+
+vi.mock("../../src/modules/employees/employee.service.js", () => ({
+  findEmployeeByWhatsAppNumber:
+    mockServices.findEmployeeByWhatsAppNumber,
+}));
+
+vi.mock("../../src/modules/unknown-contacts/unknown-contact.service.js", () => ({
+  trackUnknownContact: mockServices.trackUnknownContact,
 }));
 
 import { whatsappWebhookRouter } from "../../src/modules/integrations/whatsapp/whatsapp.webhook.js";
@@ -33,10 +49,49 @@ function createSignature(body: string): string {
     .digest("hex")}`;
 }
 
+function createIncomingMessageBody(): string {
+  return JSON.stringify({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messages: [
+                {
+                  from: "8801712345678",
+                  id: "wamid.test123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
 describe("WhatsApp webhook", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+
     mockEnv.WHATSAPP_VERIFY_TOKEN = "test-verify-token";
     mockEnv.WHATSAPP_APP_SECRET = "test-app-secret";
+
+    mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+      status: "not_found",
+    });
+
+    mockServices.trackUnknownContact.mockResolvedValue({
+      status: "tracked",
+      attemptCount: 1,
+    });
   });
 
   describe("GET verification", () => {
@@ -163,44 +218,103 @@ describe("WhatsApp webhook", () => {
     });
 
     it("parses incoming messages after verifying the signature", async () => {
-  const rawBody = JSON.stringify({
-    object: "whatsapp_business_account",
-    entry: [
-      {
-        changes: [
-          {
-            field: "messages",
-            value: {
-              messages: [
-                {
-                  from: "8801712345678",
-                  id: "wamid.test123",
-                  timestamp: "1763300000",
-                  type: "text",
-                  text: {
-                    body: "Check in",
-                  },
-                },
-              ],
-            },
+      const rawBody = createIncomingMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(logger.info).toHaveBeenCalledWith(
+        { messageCount: 1 },
+        "Verified WhatsApp webhook received.",
+      );
+    });
+
+    it("tracks an unknown contact", async () => {
+      const rawBody = createIncomingMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(
+        mockServices.findEmployeeByWhatsAppNumber,
+      ).toHaveBeenCalledWith("8801712345678");
+
+      expect(
+        mockServices.trackUnknownContact,
+      ).toHaveBeenCalledWith(
+        "8801712345678",
+        "wamid.test123",
+      );
+    });
+
+    it("does not track an inactive employee as an unknown contact", async () => {
+      mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+        status: "inactive",
+      });
+
+      const rawBody = createIncomingMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
+    });
+
+    it("does not track an active employee as an unknown contact", async () => {
+      mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+        status: "active",
+        employee: {
+          _id: {
+            toString: () => "employee-id-123",
           },
-        ],
-      },
-    ],
-  });
+          employeeCode: "EMP001",
+        },
+      });
 
-  const response = await request(app)
-    .post("/")
-    .set("Content-Type", "application/json")
-    .set("X-Hub-Signature-256", createSignature(rawBody))
-    .send(rawBody);
+      const rawBody = createIncomingMessageBody();
 
-  expect(response.status).toBe(200);
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
 
-  expect(logger.info).toHaveBeenCalledWith(
-    { messageCount: 1 },
-    "Verified WhatsApp webhook received.",
-  );
-});
+      expect(response.status).toBe(200);
+      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
+    });
+
+    it("acknowledges duplicate unknown-contact messages", async () => {
+      mockServices.trackUnknownContact.mockResolvedValue({
+        status: "duplicate",
+      });
+
+      const rawBody = createIncomingMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(
+        mockServices.trackUnknownContact,
+      ).toHaveBeenCalledOnce();
+    });
   });
 });

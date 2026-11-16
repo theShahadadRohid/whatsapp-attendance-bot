@@ -198,4 +198,68 @@ describe("Unknown contact tracking", () => {
     expect(contact?.attemptCount).toBe(1);
     expect(contact?.processedMessageIds).toEqual(["wamid-001"]);
   });
+
+
+  it("never exceeds three attempts when different messages arrive concurrently", async () => {
+    const messageIds = Array.from(
+      { length: 10 },
+      (_, index) => `wamid-concurrent-${index}`,
+    );
+
+    const results = await Promise.all(
+      messageIds.map((messageId) =>
+        trackUnknownContact(PHONE_NUMBER, messageId, BASE_TIME),
+      ),
+    );
+
+    const contact = await UnknownContactModel.findOne({
+      phoneNumber: PHONE_NUMBER,
+    });
+
+    expect(contact).not.toBeNull();
+    expect(contact?.attemptCount).toBe(3);
+    expect(contact?.restrictedUntil).toEqual(
+      new Date(BASE_TIME.getTime() + 24 * 60 * 60 * 1000),
+    );
+    expect(contact?.processedMessageIds).toHaveLength(3);
+
+    expect(
+      results.filter((result) => result.status === "tracked"),
+    ).toHaveLength(2);
+
+    expect(
+      results.filter((result) => result.status === "restricted"),
+    ).toHaveLength(8);
+  });
+
+  it("counts a message only once when duplicate deliveries arrive concurrently", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        trackUnknownContact(
+          PHONE_NUMBER,
+          "wamid-same-concurrent-message",
+          BASE_TIME,
+        ),
+      ),
+    );
+
+    const contact = await UnknownContactModel.findOne({
+      phoneNumber: PHONE_NUMBER,
+    });
+
+    expect(contact).not.toBeNull();
+    expect(contact?.attemptCount).toBe(1);
+    expect(contact?.processedMessageIds).toEqual([
+      "wamid-same-concurrent-message",
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "tracked"),
+    ).toHaveLength(1);
+
+    expect(
+      results.filter((result) => result.status === "duplicate"),
+    ).toHaveLength(9);
+  });
+
 });

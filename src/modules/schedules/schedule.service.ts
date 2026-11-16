@@ -34,12 +34,12 @@ export async function getCompanySchedule() {
   const schedule = await CompanySchedule.findOneAndUpdate(
     { key: COMPANY_SCHEDULE_KEY },
     { $setOnInsert: { key: COMPANY_SCHEDULE_KEY } },
-    {
-      new: true,
-      upsert: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
-    },
+{
+  returnDocument: "after",
+  upsert: true,
+  runValidators: true,
+  setDefaultsOnInsert: true,
+},
   );
 
   return schedule;

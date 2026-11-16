@@ -6,7 +6,7 @@ import { env } from "../../../config/env.js";
 import { logger } from "../../../common/logging/logger.js";
 import { findEmployeeByWhatsAppNumber } from "../../employees/employee.service.js";
 import { parseWhatsAppMessages } from "./whatsapp.payload.js";
-
+import { trackUnknownContact } from "../../unknown-contacts/unknown-contact.service.js";
 export const whatsappWebhookRouter = Router();
 
 /**
@@ -147,10 +147,36 @@ whatsappWebhookRouter.post(
           continue;
         }
 
-        logger.info(
-          { from: message.from },
-          "WhatsApp message received from unknown contact.",
-        );
+        const trackingResult = await trackUnknownContact(
+  message.from,
+  message.messageId,
+);
+
+if (trackingResult.status === "tracked") {
+  logger.info(
+    {
+      from: message.from,
+      attemptCount: trackingResult.attemptCount,
+    },
+    "Unknown WhatsApp contact tracked.",
+  );
+} else if (trackingResult.status === "restricted") {
+  logger.info(
+    {
+      from: message.from,
+      restrictedUntil: trackingResult.restrictedUntil,
+    },
+    "Unknown WhatsApp contact is temporarily restricted.",
+  );
+} else {
+  logger.info(
+    {
+      from: message.from,
+      messageId: message.messageId,
+    },
+    "Duplicate WhatsApp message from unknown contact ignored.",
+  );
+}
       }
     } catch (error) {
       logger.error(
