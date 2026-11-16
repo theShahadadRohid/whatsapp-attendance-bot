@@ -1,0 +1,85 @@
+
+import { Router } from "express";
+
+import { requireAuth } from "../../common/middleware/auth.middleware.js";
+import { validateBody } from "../../common/middleware/validate.middleware.js";
+
+import {
+  createEmployeeController,
+  deactivateEmployeeController,
+  getEmployeeController,
+  listEmployeesController,
+  updateEmployeeController,
+} from "./employee.controller.js";
+
+import {
+  createEmployeeSchema,
+  employeeIdSchema,
+  updateEmployeeSchema,
+} from "./employee.schema.js";
+
+const employeeRouter = Router();
+
+// All employee routes require admin authentication.
+employeeRouter.use(requireAuth);
+
+// Create employee.
+employeeRouter.post(
+  "/",
+  validateBody(createEmployeeSchema),
+  createEmployeeController,
+);
+
+// List employees.
+employeeRouter.get("/", listEmployeesController);
+
+// Get employee by ID.
+employeeRouter.get(
+  "/:id",
+  (req, _res, next) => {
+    const result = employeeIdSchema.safeParse(req.params.id);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+
+    next();
+  },
+  getEmployeeController,
+);
+
+// Update employee.
+employeeRouter.patch(
+  "/:id",
+  (req, _res, next) => {
+    const result = employeeIdSchema.safeParse(req.params.id);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+
+    next();
+  },
+  validateBody(updateEmployeeSchema),
+  updateEmployeeController,
+);
+
+// Deactivate employee.
+employeeRouter.patch(
+  "/:id/deactivate",
+  (req, _res, next) => {
+    const result = employeeIdSchema.safeParse(req.params.id);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+
+    next();
+  },
+  deactivateEmployeeController,
+);
+
+export { employeeRouter };
