@@ -19,6 +19,7 @@ import { logger } from "./common/logging/logger.js";
 import { notFoundMiddleware } from "./common/middleware/not-found.middleware.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { employeeRouter } from "./modules/employees/employee.routes.js";
+import { scheduleRouter } from "./modules/schedules/schedule.routes.js";
 
 export const app = express();
 
@@ -76,6 +77,7 @@ app.use(API_PREFIX, apiRateLimiter);
 
 app.use(`${API_PREFIX}/auth`, authRouter);
 app.use(`${API_PREFIX}/employees`, employeeRouter);
+app.use(`${API_PREFIX}/schedules`, scheduleRouter);
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({
