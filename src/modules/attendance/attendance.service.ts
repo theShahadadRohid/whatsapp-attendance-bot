@@ -487,3 +487,181 @@ export async function reviewAttendance(
 
   return attendance.save();
 }
+
+
+interface AttendanceListOptions {
+  date?: string;
+  status?: string;
+  page?: string;
+  limit?: string;
+  search?: string;
+}
+
+function validateDashboardDate(date: string): void {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+    new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date
+  ) {
+    throw new AppError(
+      "Invalid attendance date.",
+      400,
+      "INVALID_ATTENDANCE_DATE",
+    );
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Returns the daily attendance summary and employees
+ * who do not have an attendance record for that date.
+ */
+export async function getAttendanceDashboard(date?: string) {
+  const schedule = await getCompanyRules();
+  const timeZone = schedule.timeZone || APP_TIME_ZONE;
+
+  const targetDate = date ?? getLocalDateTime(new Date(), timeZone).date;
+
+  validateDashboardDate(targetDate);
+
+  const [employees, records] = await Promise.all([
+    EmployeeModel.find({ isActive: true })
+      .select("_id employeeCode fullName phoneNumber employmentType department")
+      .sort({ fullName: 1 }),
+
+    Attendance.find({ date: targetDate }).select("employee status")
+  ]);
+
+  const recordedEmployeeIds = new Set(
+    records.map((record) => record.employee.toString()),
+  );
+
+  const notCheckedInEmployees = employees.filter(
+    (employee) => !recordedEmployeeIds.has(employee._id.toString()),
+  );
+
+  return {
+    date: targetDate,
+    summary: {
+      totalEmployees: employees.length,
+      present: records.filter((record) => record.status === "present").length,
+      late: records.filter((record) => record.status === "late").length,
+      absent: records.filter((record) => record.status === "absent").length,
+      notCheckedIn: notCheckedInEmployees.length,
+    },
+    notCheckedInEmployees,
+  };
+}
+
+/**
+ * Returns paginated attendance records with optional filters.
+ */
+export async function listAttendanceRecords(
+  options: AttendanceListOptions = {},
+) {
+  const schedule = await getCompanyRules();
+  const timeZone = schedule.timeZone || APP_TIME_ZONE;
+
+  const targetDate =
+    options.date ?? getLocalDateTime(new Date(), timeZone).date;
+
+  validateDashboardDate(targetDate);
+
+  const page = Number(options.page ?? 1);
+  const limit = Number(options.limit ?? 20);
+
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    throw new AppError(
+      "Invalid pagination parameters.",
+      400,
+      "INVALID_PAGINATION",
+    );
+  }
+
+  const allowedStatuses = ["present", "late", "absent"] as const;
+
+  if (
+    options.status &&
+    !allowedStatuses.includes(
+      options.status as (typeof allowedStatuses)[number],
+    )
+  ) {
+    throw new AppError(
+      "Invalid attendance status.",
+      400,
+      "INVALID_ATTENDANCE_STATUS",
+    );
+  }
+
+  const filter: {
+    date: string;
+    status?: (typeof allowedStatuses)[number];
+    employee?: { $in: Types.ObjectId[] };
+  } = {
+    date: targetDate,
+  };
+
+  if (options.status) {
+    filter.status = options.status as (typeof allowedStatuses)[number];
+  }
+
+  if (options.search?.trim()) {
+    const searchRegex = new RegExp(escapeRegex(options.search.trim()), "i");
+
+    const matchingEmployees = await EmployeeModel.find({
+      isActive: true,
+      $or: [
+        { employeeCode: searchRegex },
+        { fullName: searchRegex },
+        { phoneNumber: searchRegex },
+      ],
+    }).distinct("_id");
+
+    if (matchingEmployees.length === 0) {
+      return {
+        date: targetDate,
+        records: [],
+        pagination: {
+          page,
+          limit,
+          totalRecords: 0,
+          totalPages: 0,
+        },
+      };
+    }
+
+    filter.employee = { $in: matchingEmployees };
+  }
+
+  const [records, totalRecords] = await Promise.all([
+    Attendance.find(filter)
+      .populate(
+        "employee",
+        "employeeCode fullName phoneNumber employmentType department",
+      )
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+
+    Attendance.countDocuments(filter),
+  ]);
+
+  return {
+    date: targetDate,
+    records,
+    pagination: {
+      page,
+      limit,
+      totalRecords,
+      totalPages: Math.ceil(totalRecords / limit),
+    },
+  };
+}

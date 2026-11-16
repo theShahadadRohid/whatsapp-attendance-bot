@@ -5,6 +5,8 @@ import type { AuthenticatedRequest } from "../auth/auth.types.js";
 import {
   checkInEmployee,
   checkOutEmployee,
+  getAttendanceDashboard,
+  listAttendanceRecords,
   processDailyAttendance,
   reviewAttendance,
 } from "./attendance.service.js";
@@ -86,3 +88,55 @@ export const reviewAutoCheckout: RequestHandler = async (
     next(error);
   }
 };
+
+
+export const getDashboard: RequestHandler = async (req, res, next) => {
+  try {
+    const date =
+      typeof req.query.date === "string" ? req.query.date : undefined;
+
+    const dashboard = await getAttendanceDashboard(date);
+
+    res.status(200).json({
+      message: "Attendance dashboard retrieved successfully.",
+      data: dashboard,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getAttendanceList: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const result = await listAttendanceRecords({
+      ...(typeof req.query.date === "string" && {
+        date: req.query.date,
+      }),
+      ...(typeof req.query.status === "string" && {
+        status: req.query.status,
+      }),
+      ...(typeof req.query.page === "string" && {
+        page: req.query.page,
+      }),
+      ...(typeof req.query.limit === "string" && {
+        limit: req.query.limit,
+      }),
+      ...(typeof req.query.search === "string" && {
+        search: req.query.search,
+      }),
+    });
+
+    res.status(200).json({
+      message: "Attendance records retrieved successfully.",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
