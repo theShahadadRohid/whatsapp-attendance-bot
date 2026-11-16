@@ -174,3 +174,32 @@ export const getEmployeeHistory: RequestHandler = async (
     next(error);
   }
 };
+
+
+
+export const getReviewQueue: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const result = await getAttendanceReviewQueue({
+      ...(typeof req.query.date === "string" && {
+        date: req.query.date,
+      }),
+      ...(typeof req.query.page === "string" && {
+        page: req.query.page,
+      }),
+      ...(typeof req.query.limit === "string" && {
+        limit: req.query.limit,
+      }),
+    });
+
+    res.status(200).json({
+      message: "Attendance review queue retrieved successfully.",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
