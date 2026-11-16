@@ -2,23 +2,26 @@
 import { appConfig } from "./config/app.config.js";
 import {
   connectToDatabase,
-  disconnectFromDatabase
+  disconnectFromDatabase,
 } from "./config/database.js";
 import { logger } from "./common/logging/logger.js";
 import { APP_NAME } from "./constants/app.constants.js";
 import { app } from "./app.js";
+import { startAttendanceScheduler } from "./modules/attendance/attendance.scheduler.js";
 
 async function startServer(): Promise<void> {
   await connectToDatabase();
+
+  const stopAttendanceScheduler = await startAttendanceScheduler();
 
   const server = app.listen(appConfig.port, () => {
     logger.info(
       {
         service: APP_NAME,
         port: appConfig.port,
-        environment: appConfig.environment
+        environment: appConfig.environment,
       },
-      "Server started"
+      "Server started",
     );
   });
 
@@ -33,6 +36,8 @@ async function startServer(): Promise<void> {
 
     logger.info({ signal }, "Graceful shutdown started");
 
+    stopAttendanceScheduler();
+
     server.close((error) => {
       void (async () => {
         try {
@@ -40,7 +45,7 @@ async function startServer(): Promise<void> {
         } catch (disconnectError) {
           logger.error(
             { err: disconnectError },
-            "Failed to disconnect from MongoDB"
+            "Failed to disconnect from MongoDB",
           );
           process.exitCode = 1;
         }
@@ -72,7 +77,7 @@ startServer().catch(async (error: unknown) => {
   } catch (disconnectError) {
     logger.error(
       { err: disconnectError },
-      "Failed to clean up MongoDB connection after startup failure"
+      "Failed to clean up MongoDB connection after startup failure",
     );
   }
 
