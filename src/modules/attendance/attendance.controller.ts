@@ -6,6 +6,7 @@ import {
   checkInEmployee,
   checkOutEmployee,
   getAttendanceDashboard,
+  getAttendanceReviewQueue,
   getEmployeeAttendanceHistory,
   listAttendanceRecords,
   processDailyAttendance,

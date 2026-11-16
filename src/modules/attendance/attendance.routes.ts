@@ -12,6 +12,7 @@ import {
   processDaily,
   reviewAutoCheckout,
   getEmployeeHistory,
+  getReviewQueue,
 } from "./attendance.controller.js";
 import {
   checkInSchema,
@@ -71,8 +72,11 @@ attendanceRouter.post(
 // Daily processing
 attendanceRouter.post("/process/:date", processDaily);
 
+
 // Auto-checkout review
 attendanceRouter.patch("/:id/review", reviewAutoCheckout);
+
+attendanceRouter.get("/reviews", getReviewQueue);
 
 attendanceRouter.get(
   "/employees/:employeeId/history",

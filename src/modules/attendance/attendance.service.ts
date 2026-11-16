@@ -8,7 +8,7 @@ import {
   CompanySchedule,
 } from "../schedules/schedule.model";
 import { Attendance } from "./attendance.model";
-import type { CheckInPayload, CheckOutPayload } from "./attendance.schema";
+import type { CheckInPayload, CheckOutPayload, CorrectAttendancePayload } from "./attendance.schema";
 
 function getLocalDateTime(date: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -848,4 +848,128 @@ export async function getAttendanceReviewQueue(
       totalPages: Math.ceil(totalRecords / limit),
     },
   };
+}
+
+
+
+/**
+ * Allows an authorized manager to correct an attendance record.
+ * All corrections are recorded with the manager's ID and reason.
+ */
+export async function correctAttendance(
+  attendanceId: string,
+  adminId: string,
+  input: CorrectAttendancePayload,
+) {
+  if (!isValidObjectId(attendanceId) || !isValidObjectId(adminId)) {
+    throw new AppError(
+      "Invalid attendance or admin ID.",
+      400,
+      "INVALID_ID",
+    );
+  }
+
+  const attendance = await Attendance.findById(attendanceId);
+
+  if (!attendance) {
+    throw new AppError(
+      "Attendance record not found.",
+      404,
+      "ATTENDANCE_NOT_FOUND",
+    );
+  }
+
+  const schedule = await getCompanyRules();
+  const timeZone = attendance.timeZone || schedule.timeZone || APP_TIME_ZONE;
+
+  // Use the supplied corrected check-in, or retain the existing one.
+  const correctedCheckIn = input.checkInAt
+    ? new Date(input.checkInAt)
+    : attendance.checkInAt;
+
+  // Use the supplied corrected checkout, or retain the existing one.
+  const correctedCheckOut = input.checkOutAt
+    ? new Date(input.checkOutAt)
+    : attendance.checkOutAt;
+
+  if (!correctedCheckIn) {
+    throw new AppError(
+      "A check-in time is required before checkout can be recorded.",
+      400,
+      "CHECK_IN_REQUIRED",
+    );
+  }
+
+  // Both timestamps must belong to this attendance record's local date.
+  const checkInLocal = getLocalDateTime(correctedCheckIn, timeZone);
+
+  if (checkInLocal.date !== attendance.date) {
+    throw new AppError(
+      "Corrected check-in must belong to the attendance date.",
+      400,
+      "INVALID_CHECK_IN_DATE",
+    );
+  }
+
+  if (correctedCheckOut) {
+    const checkOutLocal = getLocalDateTime(correctedCheckOut, timeZone);
+
+    if (checkOutLocal.date !== attendance.date) {
+      throw new AppError(
+        "Corrected checkout must belong to the attendance date.",
+        400,
+        "INVALID_CHECK_OUT_DATE",
+      );
+    }
+
+    if (
+      correctedCheckOut.getTime() <= correctedCheckIn.getTime()
+    ) {
+      throw new AppError(
+        "Checkout must be after check-in.",
+        400,
+        "INVALID_CHECKOUT_TIME",
+      );
+    }
+  }
+
+  // Recalculate attendance status using the configured company rules.
+  const checkInRules = schedule.checkIn;
+
+  let checkInStatus: "on_time" | "late_yellow" | "late_red" = "on_time";
+  let attendanceStatus: "present" | "late" = "present";
+
+  if (checkInLocal.time > checkInRules.onTimeUntil) {
+    attendanceStatus = "late";
+
+    checkInStatus =
+      checkInLocal.time <= checkInRules.yellowLateUntil
+        ? "late_yellow"
+        : "late_red";
+  }
+
+  attendance.checkInAt = correctedCheckIn;
+  attendance.checkInStatus = checkInStatus;
+  attendance.status = attendanceStatus;
+
+  if (correctedCheckOut) {
+    const checkOutLocal = getLocalDateTime(correctedCheckOut, timeZone);
+
+    attendance.checkOutAt = correctedCheckOut;
+    attendance.checkOutStatus =
+      checkOutLocal.time < schedule.checkOut.earlyCheckoutBefore
+        ? "early"
+        : "normal";
+
+    // The checkout is now manager-corrected, not system-generated.
+    if (input.checkOutAt) {
+      attendance.isAutoCheckout = false;
+    }
+  }
+
+  attendance.correctionReason = input.reason;
+  attendance.correctedAt = new Date();
+  attendance.correctedBy = new Types.ObjectId(adminId);
+
+  return attendance.save();
 }

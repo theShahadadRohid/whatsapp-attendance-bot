@@ -91,6 +91,20 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       type: Schema.Types.ObjectId,
       ref: "Admin",
     },
+
+correctionReason: {
+  type: String,
+  trim: true,
+  maxlength: 500,
+},
+correctedAt: {
+  type: Date,
+},
+correctedBy: {
+  type: Schema.Types.ObjectId,
+  ref: "Admin",
+},
+
   },
   {
     timestamps: true,

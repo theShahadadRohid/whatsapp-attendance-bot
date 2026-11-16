@@ -45,4 +45,8 @@ export interface AttendanceRecord {
 
   reviewedAt?: Date;
   reviewedBy?: Types.ObjectId;
+
+  correctionReason?: string;
+  correctedAt?: Date;
+  correctedBy?: Types.ObjectId;
 }
