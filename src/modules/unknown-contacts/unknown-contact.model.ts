@@ -32,6 +32,13 @@ const unknownContactSchema = new Schema(
       type: [String],
       default: [],
     },
+
+    revision: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+    },
   },
   {
     timestamps: true,
