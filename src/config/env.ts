@@ -57,7 +57,7 @@ const envSchema = z
       .int()
       .positive()
       .max(10000)
-      .default(100),
+      .default(50),
   })
   .superRefine((data, context) => {
     if (

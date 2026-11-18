@@ -2,7 +2,9 @@
 export type WhatsAppMessageType = "text" | "location" | "unsupported";
 
 export interface WhatsAppIncomingMessage {
-  from: string;
+  from?: string;
+  fromUserId?: string;
+  contactUserId?: string;
   messageId: string;
   timestamp: string;
   type: WhatsAppMessageType;
@@ -25,12 +27,6 @@ function isString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-/**
- * Extracts incoming WhatsApp messages from Meta's webhook payload.
- *
- * Status notifications and unrelated webhook events are ignored.
- * Unsupported message types are preserved as "unsupported".
- */
 export function parseWhatsAppMessages(
   payload: unknown,
 ): WhatsAppIncomingMessage[] {
@@ -59,6 +55,7 @@ export function parseWhatsAppMessages(
       }
 
       const value = change.value;
+
       const metadata = isRecord(value.metadata)
         ? value.metadata
         : undefined;
@@ -79,7 +76,6 @@ export function parseWhatsAppMessages(
       for (const message of value.messages) {
         if (
           !isRecord(message) ||
-          !isString(message.from) ||
           !isString(message.id) ||
           !isString(message.timestamp) ||
           !isString(message.type)
@@ -87,10 +83,34 @@ export function parseWhatsAppMessages(
           continue;
         }
 
-        const contact = contacts.find(
-          (item) =>
-            isRecord(item) && item.wa_id === message.from,
-        );
+        const from = isString(message.from)
+          ? message.from
+          : undefined;
+
+        const fromUserId = isString(message.from_user_id)
+          ? message.from_user_id
+          : undefined;
+
+        // At least one sender identifier is required.
+        if (!from && !fromUserId) {
+          continue;
+        }
+
+        const contact = contacts.find((item) => {
+          if (!isRecord(item)) {
+            return false;
+          }
+
+          return (
+            (from && item.wa_id === from) ||
+            (fromUserId && item.user_id === fromUserId)
+          );
+        });
+
+        const contactUserId =
+          isRecord(contact) && isString(contact.user_id)
+            ? contact.user_id
+            : undefined;
 
         const profile =
           isRecord(contact) && isRecord(contact.profile)
@@ -103,7 +123,9 @@ export function parseWhatsAppMessages(
             : undefined;
 
         const commonFields = {
-          from: message.from,
+          ...(from ? { from } : {}),
+          ...(fromUserId ? { fromUserId } : {}),
+          ...(contactUserId ? { contactUserId } : {}),
           messageId: message.id,
           timestamp: message.timestamp,
           ...(phoneNumberId ? { phoneNumberId } : {}),
@@ -147,21 +169,19 @@ export function parseWhatsAppMessages(
             continue;
           }
 
-          const location = {
-            latitude,
-            longitude,
-            ...(isString(message.location.name)
-              ? { name: message.location.name }
-              : {}),
-            ...(isString(message.location.address)
-              ? { address: message.location.address }
-              : {}),
-          };
-
           incomingMessages.push({
             ...commonFields,
             type: "location",
-            location,
+            location: {
+              latitude,
+              longitude,
+              ...(isString(message.location.name)
+                ? { name: message.location.name }
+                : {}),
+              ...(isString(message.location.address)
+                ? { address: message.location.address }
+                : {}),
+            },
           });
 
           continue;

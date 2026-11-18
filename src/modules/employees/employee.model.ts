@@ -40,6 +40,13 @@ const employeeSchema = new Schema(
       default: undefined
     },
 
+    whatsappBusinessScopedUserId: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
+    },
+
     isActive: {
       type: Boolean,
       default: true,
