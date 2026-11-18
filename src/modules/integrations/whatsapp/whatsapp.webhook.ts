@@ -9,7 +9,14 @@ import {
   checkInEmployee,
   checkOutEmployee,
 } from "../../attendance/attendance.service.js";
+import { EmployeeModel } from "../../employees/employee.model.js";
 import { findEmployeeByWhatsAppIdentity } from "../../employees/employee.service.js";
+import {
+  acceptWhatsAppEnrollmentConsent,
+  revokeWhatsAppEnrollment,
+  verifyWhatsAppEnrollmentToken,
+} from "../../whatsapp-enrollment/whatsapp-enrollment.service.js";
+import { WhatsAppEnrollmentModel } from "../../whatsapp-enrollment/whatsapp-enrollment.model.js";
 import { trackUnknownContact } from "../../unknown-contacts/unknown-contact.service.js";
 import { sendWhatsAppTextMessage } from "./whatsapp.client.js";
 import {
@@ -25,7 +32,12 @@ export const whatsappWebhookRouter = Router();
 const HELP_MESSAGE = [
   "Welcome to the attendance system.",
   "",
-  "Available commands:",
+  "WhatsApp enrollment:",
+  "ENROLL <token> - Verify your employee account",
+  "YES - Accept WhatsApp attendance messaging after verification",
+  "STOP - Withdraw consent and stop attendance messaging",
+  "",
+  "Attendance commands (after enrollment):",
   "IN - Check in",
   "IN reason: Traffic jam - Check in with a reason",
   "OUT - Check out",
@@ -33,8 +45,15 @@ const HELP_MESSAGE = [
   "HELP - Show these instructions",
 ].join("\n");
 
+const ENROLLMENT_REQUIRED_MESSAGE = [
+  "Your WhatsApp account is not enrolled for attendance.",
+  "",
+  "Please contact your manager for an enrollment token.",
+  "Then send: ENROLL <token>",
+].join("\n");
+
 const INVALID_COMMAND_MESSAGE =
-  "Invalid command. Send HELP to see the available attendance commands.";
+  "Invalid command. Send HELP to see the available commands.";
 
 function isValidSignature(
   rawBody: Buffer,
@@ -95,20 +114,20 @@ async function sendReply(
   }
 
   try {
-if (phoneNumber) {
-  await sendWhatsAppTextMessage({
-    to: phoneNumber,
-    body,
-  });
-} else if (bsuid) {
-  await sendWhatsAppTextMessage({
-    recipient: bsuid,
-    body,
-  });
-}
+    if (phoneNumber) {
+      await sendWhatsAppTextMessage({
+        to: phoneNumber,
+        body,
+      });
+    } else if (bsuid) {
+      await sendWhatsAppTextMessage({
+        recipient: bsuid,
+        body,
+      });
+    }
   } catch (error) {
-    // The attendance operation is already marked processed.
-    // A failed reply must not cause the attendance action to run again.
+    // The attendance/enrollment operation is already marked processed.
+    // A failed reply must not cause the operation to run again.
     logger.error(
       {
         err: error,
@@ -116,6 +135,299 @@ if (phoneNumber) {
       },
       "Failed to send WhatsApp reply.",
     );
+  }
+}
+
+async function claimMessage(
+  messageId: string,
+  employeeId: string,
+) {
+  const claim = await claimWhatsAppMessage({
+    messageId,
+    employeeId,
+  });
+
+  if (claim.status !== "claimed") {
+    logger.info(
+      {
+        messageId,
+        status: claim.status,
+      },
+      "Duplicate or currently processing WhatsApp message ignored.",
+    );
+
+    return null;
+  }
+
+  return claim;
+}
+
+async function finishMessage(
+  message: {
+    messageId: string;
+    from?: string;
+    fromUserId?: string;
+  },
+  leaseToken: string,
+  replyMessage: string,
+): Promise<void> {
+  const markedProcessed = await markWhatsAppMessageProcessed(
+    message.messageId,
+    leaseToken,
+  );
+
+  if (!markedProcessed) {
+    logger.warn(
+      { messageId: message.messageId },
+      "WhatsApp message processing lease was lost before completion.",
+    );
+
+    return;
+  }
+
+  await sendReply(message, replyMessage);
+}
+
+/**
+ * Processes an enrollment token before unknown-contact tracking.
+ *
+ * The enrollment service verifies that the sender's phone number
+ * matches the employee's registered phone number.
+ */
+async function handleEnrollmentTokenMessage(
+  message: Awaited<
+    ReturnType<typeof parseWhatsAppMessages>
+  >[number],
+  token: string,
+): Promise<boolean> {
+  if (!message.from) {
+    await sendReply(
+      message,
+      "Your WhatsApp phone number could not be verified. Please send the enrollment token from your registered phone number.",
+    );
+
+    return true;
+  }
+
+  try {
+    const result = await verifyWhatsAppEnrollmentToken({
+      token,
+      senderPhoneNumber: message.from,
+    });
+
+    const employeeId = result.employee._id.toString();
+
+    const claim = await claimMessage(
+      message.messageId,
+      employeeId,
+    );
+
+    if (!claim) {
+      return true;
+    }
+
+    await finishMessage(
+      message,
+      claim.leaseToken,
+      [
+        `Your employee account has been verified, ${result.employee.fullName}.`,
+        "",
+        "To explicitly consent to WhatsApp attendance messaging, reply:",
+        "YES",
+        "",
+        "Reply STOP if you do not want to enroll.",
+      ].join("\n"),
+    );
+
+    logger.info(
+      {
+        employeeId,
+        employeeCode: result.employee.employeeCode,
+        messageId: message.messageId,
+      },
+      "WhatsApp enrollment token verified.",
+    );
+
+    return true;
+  } catch (error) {
+    if (error instanceof AppError) {
+      await sendReply(message, error.message);
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Processes explicit employee consent.
+ *
+ * A verified enrollment is required before YES can be accepted.
+ */
+async function handleConsentMessage(
+  message: Awaited<
+    ReturnType<typeof parseWhatsAppMessages>
+  >[number],
+  employee: {
+    _id: { toString(): string };
+    employeeCode: string;
+    fullName: string;
+    isActive: boolean;
+  },
+): Promise<void> {
+  const employeeId = employee._id.toString();
+
+  const claim = await claimMessage(
+    message.messageId,
+    employeeId,
+  );
+
+  if (!claim) {
+    return;
+  }
+
+  try {
+    if (!employee.isActive) {
+      await finishMessage(
+        message,
+        claim.leaseToken,
+        "Your employee account is inactive. Please contact your manager.",
+      );
+      return;
+    }
+
+    const enrollment = await WhatsAppEnrollmentModel.findOne({
+      employeeId,
+      status: "verified",
+    });
+
+    if (!enrollment) {
+      await finishMessage(
+        message,
+        claim.leaseToken,
+        "No verified enrollment is waiting for consent. Send your enrollment token first, or contact your manager.",
+      );
+      return;
+    }
+
+    // Link the WhatsApp Business-Scoped User ID when Meta provides it.
+    // Identity linking does not itself grant messaging consent.
+    if (message.fromUserId) {
+      await EmployeeModel.updateOne(
+        { _id: employeeId },
+        {
+          $set: {
+            whatsappBusinessScopedUserId: message.fromUserId,
+          },
+        },
+        { runValidators: true },
+      );
+    }
+
+    await acceptWhatsAppEnrollmentConsent(
+      enrollment._id.toString(),
+    );
+
+    await finishMessage(
+      message,
+      claim.leaseToken,
+      [
+        "WhatsApp attendance enrollment completed successfully.",
+        "",
+        "You can now use:",
+        "IN - Check in",
+        "OUT - Check out",
+        "HELP - Show instructions",
+        "",
+        "You can withdraw consent at any time by sending STOP.",
+      ].join("\n"),
+    );
+
+    logger.info(
+      {
+        employeeId,
+        employeeCode: employee.employeeCode,
+        messageId: message.messageId,
+        hasBsuid: Boolean(message.fromUserId),
+      },
+      "Employee accepted WhatsApp attendance consent.",
+    );
+  } catch (error) {
+    await markWhatsAppMessageFailed(
+      message.messageId,
+      claim.leaseToken,
+      error,
+    );
+
+    throw error;
+  }
+}
+
+/**
+ * Handles a STOP command from an identified employee.
+ */
+async function handleStopMessage(
+  message: Awaited<
+    ReturnType<typeof parseWhatsAppMessages>
+  >[number],
+  employee: {
+    _id: { toString(): string };
+    employeeCode: string;
+  },
+): Promise<void> {
+  const employeeId = employee._id.toString();
+
+  const claim = await claimMessage(
+    message.messageId,
+    employeeId,
+  );
+
+  if (!claim) {
+    return;
+  }
+
+  try {
+    let replyMessage: string;
+
+    try {
+      await revokeWhatsAppEnrollment(employeeId);
+
+      replyMessage = [
+        "Your WhatsApp attendance consent has been withdrawn.",
+        "",
+        "You will no longer be able to use WhatsApp attendance commands.",
+        "Contact your manager if you want to enroll again.",
+      ].join("\n");
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 404) {
+        replyMessage = "You do not currently have an active WhatsApp enrollment.";
+      } else {
+        throw error;
+      }
+    }
+
+    await finishMessage(
+      message,
+      claim.leaseToken,
+      replyMessage,
+    );
+
+    logger.info(
+      {
+        employeeId,
+        employeeCode: employee.employeeCode,
+        messageId: message.messageId,
+      },
+      "WhatsApp STOP command processed.",
+    );
+  } catch (error) {
+    await markWhatsAppMessageFailed(
+      message.messageId,
+      claim.leaseToken,
+      error,
+    );
+
+    throw error;
   }
 }
 
@@ -131,21 +443,12 @@ async function handleRegisteredEmployeeMessage(
 ): Promise<void> {
   const employeeId = employee._id.toString();
 
-  const claim = await claimWhatsAppMessage({
-    messageId: message.messageId,
+  const claim = await claimMessage(
+    message.messageId,
     employeeId,
-  });
+  );
 
-  if (claim.status !== "claimed") {
-    logger.info(
-      {
-        messageId: message.messageId,
-        status: claim.status,
-        employeeCode: employee.employeeCode,
-      },
-      "Duplicate or currently processing WhatsApp message ignored.",
-    );
-
+  if (!claim) {
     return;
   }
 
@@ -167,59 +470,101 @@ async function handleRegisteredEmployeeMessage(
           break;
         }
 
+        case "stop": {
+          try {
+            await revokeWhatsAppEnrollment(employeeId);
+
+            replyMessage =
+              "Your WhatsApp attendance consent has been withdrawn. Contact your manager if you want to enroll again.";
+          } catch (error) {
+            if (error instanceof AppError && error.statusCode === 404) {
+              replyMessage =
+                "You do not currently have an active WhatsApp enrollment.";
+            } else {
+              throw error;
+            }
+          }
+          break;
+        }
+
+        case "consent": {
+          replyMessage =
+            "Your enrollment consent could not be processed. Please contact your manager.";
+          break;
+        }
+
+        case "enroll": {
+          replyMessage =
+            "Please send ENROLL <token> as a separate message.";
+          break;
+        }
+
         case "invalid": {
           replyMessage = INVALID_COMMAND_MESSAGE;
           break;
         }
 
-        case "check_in": {
-          const attendance = await checkInEmployee(
-            employeeId,
-            command.reason
-              ? { reason: command.reason }
-              : {},
-          );
-
-          const timeZone = attendance.timeZone;
-          if (!attendance.checkInAt) {
-  throw new Error(
-    "Check-in was created without a check-in timestamp.",
-  );
-}
-
-const checkInTime = formatAttendanceTime(
-  attendance.checkInAt,
-  timeZone,
-);
-
-          replyMessage =
-            `Check-in recorded successfully at ${checkInTime}.` +
-            (attendance.status === "late"
-              ? " Your attendance has been marked late."
-              : " You are marked present.");
-
-          break;
-        }
-
+        case "check_in":
         case "check_out": {
-          const attendance = await checkOutEmployee(
+          const enrollment = await WhatsAppEnrollmentModel.findOne({
             employeeId,
-            command.note
-              ? { note: command.note }
-              : {},
-          );
+            status: "enrolled",
+          });
 
-          const timeZone = attendance.timeZone;
-          const checkOutTime = formatAttendanceTime(
-            attendance.checkOutAt!,
-            timeZone,
-          );
+          if (!enrollment) {
+            replyMessage = ENROLLMENT_REQUIRED_MESSAGE;
+            break;
+          }
 
-          replyMessage =
-            `Check-out recorded successfully at ${checkOutTime}.` +
-            (attendance.checkOutStatus === "early"
-              ? " Your checkout has been marked early."
-              : "");
+          if (command.type === "check_in") {
+            const attendance = await checkInEmployee(
+              employeeId,
+              command.reason
+                ? { reason: command.reason }
+                : {},
+            );
+
+            if (!attendance.checkInAt) {
+              throw new Error(
+                "Check-in was created without a check-in timestamp.",
+              );
+            }
+
+            const checkInTime = formatAttendanceTime(
+              attendance.checkInAt,
+              attendance.timeZone,
+            );
+
+            replyMessage =
+              `Check-in recorded successfully at ${checkInTime}.` +
+              (attendance.status === "late"
+                ? " Your attendance has been marked late."
+                : " You are marked present.");
+          } else {
+            const attendance = await checkOutEmployee(
+              employeeId,
+              command.note
+                ? { note: command.note }
+                : {},
+            );
+
+            if (!attendance.checkOutAt) {
+              throw new Error(
+                "Check-out was created without a check-out timestamp.",
+              );
+            }
+
+            const checkOutTime = formatAttendanceTime(
+              attendance.checkOutAt,
+              attendance.timeZone,
+            );
+
+            replyMessage =
+              `Check-out recorded successfully at ${checkOutTime}.` +
+              (attendance.checkOutStatus === "early"
+                ? " Your checkout has been marked early."
+                : "");
+          }
 
           break;
         }
@@ -228,10 +573,8 @@ const checkInTime = formatAttendanceTime(
   } catch (error) {
     if (error instanceof AppError) {
       // Expected attendance validation errors are final results.
-      // Do not retry the same command.
       replyMessage = error.message;
     } else {
-      // Unexpected failures can be retried after the lease expires.
       await markWhatsAppMessageFailed(
         message.messageId,
         claim.leaseToken,
@@ -242,21 +585,11 @@ const checkInTime = formatAttendanceTime(
     }
   }
 
-  const markedProcessed = await markWhatsAppMessageProcessed(
-    message.messageId,
+  await finishMessage(
+    message,
     claim.leaseToken,
+    replyMessage,
   );
-
-  if (!markedProcessed) {
-    logger.warn(
-      { messageId: message.messageId },
-      "WhatsApp message processing lease was lost before completion.",
-    );
-
-    return;
-  }
-
-  await sendReply(message, replyMessage);
 
   logger.info(
     {
@@ -361,6 +694,20 @@ whatsappWebhookRouter.post(
           continue;
         }
 
+        // Enrollment token verification must happen before unknown-contact
+        // tracking because an employee may not have a linked BSUID yet.
+        if (message.type === "text" && message.text) {
+          const command = parseWhatsAppCommand(message.text);
+
+          if (command.type === "enroll") {
+            await handleEnrollmentTokenMessage(
+              message,
+              command.token,
+            );
+            continue;
+          }
+        }
+
         const result = await findEmployeeByWhatsAppIdentity({
           ...(message.from
             ? { phoneNumber: message.from }
@@ -387,6 +734,24 @@ whatsappWebhookRouter.post(
           result.status === "active" ||
           result.status === "inactive"
         ) {
+          if (
+            message.type === "text" &&
+            message.text &&
+            parseWhatsAppCommand(message.text).type === "consent"
+          ) {
+            await handleConsentMessage(message, result.employee);
+            continue;
+          }
+
+          if (
+            message.type === "text" &&
+            message.text &&
+            parseWhatsAppCommand(message.text).type === "stop"
+          ) {
+            await handleStopMessage(message, result.employee);
+            continue;
+          }
+
           await handleRegisteredEmployeeMessage(
             message,
             result.employee,

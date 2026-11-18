@@ -9,6 +9,16 @@ export type WhatsAppCommand =
       note?: string;
     }
   | {
+      type: "enroll";
+      token: string;
+    }
+  | {
+      type: "consent";
+    }
+  | {
+      type: "stop";
+    }
+  | {
       type: "help";
     }
   | {
@@ -16,9 +26,12 @@ export type WhatsAppCommand =
     };
 
 /**
- * Parses an incoming WhatsApp text message into an attendance command.
+ * Parses an incoming WhatsApp text message.
  *
  * Supported commands:
+ * ENROLL <token>
+ * YES
+ * STOP
  * IN
  * IN reason: Traffic jam
  * OUT
@@ -36,6 +49,25 @@ export function parseWhatsAppCommand(
 
   if (/^HELP$/i.test(normalizedMessage)) {
     return { type: "help" };
+  }
+
+  const enrollmentMatch = normalizedMessage.match(
+    /^ENROLL\s+([A-Za-z0-9_-]{20,})$/i,
+  );
+
+if (enrollmentMatch?.[1]) {
+  return {
+    type: "enroll",
+    token: enrollmentMatch[1],
+  };
+}
+
+  if (/^YES$/i.test(normalizedMessage)) {
+    return { type: "consent" };
+  }
+
+  if (/^STOP$/i.test(normalizedMessage)) {
+    return { type: "stop" };
   }
 
   const checkInMatch = normalizedMessage.match(
