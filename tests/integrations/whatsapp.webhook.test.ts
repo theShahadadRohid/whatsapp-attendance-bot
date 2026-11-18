@@ -1,9 +1,10 @@
 
-import { logger } from "../../src/common/logging/logger.js";
 import { createHmac } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { logger } from "../../src/common/logging/logger.js";
 
 const mockEnv = vi.hoisted(() => ({
   WHATSAPP_VERIFY_TOKEN: "test-verify-token" as string | undefined,
@@ -13,6 +14,15 @@ const mockEnv = vi.hoisted(() => ({
 const mockServices = vi.hoisted(() => ({
   findEmployeeByWhatsAppIdentity: vi.fn(),
   trackUnknownContact: vi.fn(),
+
+  checkInEmployee: vi.fn(),
+  checkOutEmployee: vi.fn(),
+
+  sendWhatsAppTextMessage: vi.fn(),
+
+  claimWhatsAppMessage: vi.fn(),
+  markWhatsAppMessageProcessed: vi.fn(),
+  markWhatsAppMessageFailed: vi.fn(),
 }));
 
 vi.mock("../../src/config/env.js", () => ({
@@ -34,6 +44,23 @@ vi.mock("../../src/modules/employees/employee.service.js", () => ({
 
 vi.mock("../../src/modules/unknown-contacts/unknown-contact.service.js", () => ({
   trackUnknownContact: mockServices.trackUnknownContact,
+}));
+
+vi.mock("../../src/modules/attendance/attendance.service.js", () => ({
+  checkInEmployee: mockServices.checkInEmployee,
+  checkOutEmployee: mockServices.checkOutEmployee,
+}));
+
+vi.mock("../../src/modules/integrations/whatsapp/whatsapp.client.js", () => ({
+  sendWhatsAppTextMessage: mockServices.sendWhatsAppTextMessage,
+}));
+
+vi.mock("../../src/modules/integrations/whatsapp/whatsapp-message.service.js", () => ({
+  claimWhatsAppMessage: mockServices.claimWhatsAppMessage,
+  markWhatsAppMessageProcessed:
+    mockServices.markWhatsAppMessageProcessed,
+  markWhatsAppMessageFailed:
+    mockServices.markWhatsAppMessageFailed,
 }));
 
 import { whatsappWebhookRouter } from "../../src/modules/integrations/whatsapp/whatsapp.webhook.js";
@@ -150,6 +177,29 @@ describe("WhatsApp webhook", () => {
       status: "tracked",
       attemptCount: 1,
     });
+
+    mockServices.claimWhatsAppMessage.mockResolvedValue({
+      status: "claimed",
+      leaseToken: "test-lease-token",
+      attemptCount: 1,
+    });
+
+    mockServices.markWhatsAppMessageProcessed.mockResolvedValue(true);
+    mockServices.markWhatsAppMessageFailed.mockResolvedValue(true);
+
+    mockServices.checkInEmployee.mockResolvedValue({
+      timeZone: "Asia/Dhaka",
+      checkInAt: new Date("2026-11-18T09:00:00+06:00"),
+      status: "present",
+    });
+
+    mockServices.checkOutEmployee.mockResolvedValue({
+      timeZone: "Asia/Dhaka",
+      checkOutAt: new Date("2026-11-18T18:00:00+06:00"),
+      checkOutStatus: "normal",
+    });
+
+    mockServices.sendWhatsAppTextMessage.mockResolvedValue(undefined);
   });
 
   describe("GET verification", () => {
@@ -394,6 +444,7 @@ describe("WhatsApp webhook", () => {
             toString: () => "employee-id-123",
           },
           employeeCode: "EMP001",
+          isActive: false,
         },
       });
 
@@ -406,7 +457,25 @@ describe("WhatsApp webhook", () => {
         .send(rawBody);
 
       expect(response.status).toBe(200);
+
       expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
+
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledWith({
+        messageId: "wamid.test123",
+        employeeId: "employee-id-123",
+      });
+
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.markWhatsAppMessageProcessed,
+      ).toHaveBeenCalledOnce();
+
+      expect(
+        mockServices.sendWhatsAppTextMessage,
+      ).toHaveBeenCalledOnce();
     });
 
     it("does not track an active employee as an unknown contact", async () => {
@@ -417,6 +486,7 @@ describe("WhatsApp webhook", () => {
             toString: () => "employee-id-123",
           },
           employeeCode: "EMP001",
+          isActive: true,
         },
       });
 
@@ -429,7 +499,26 @@ describe("WhatsApp webhook", () => {
         .send(rawBody);
 
       expect(response.status).toBe(200);
+
       expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
+
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledWith({
+        messageId: "wamid.test123",
+        employeeId: "employee-id-123",
+      });
+
+      // "Check in" is not a valid parser command. The parser expects "IN".
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.markWhatsAppMessageProcessed,
+      ).toHaveBeenCalledOnce();
+
+      expect(
+        mockServices.sendWhatsAppTextMessage,
+      ).toHaveBeenCalledOnce();
     });
 
     it("acknowledges duplicate unknown-contact messages", async () => {
