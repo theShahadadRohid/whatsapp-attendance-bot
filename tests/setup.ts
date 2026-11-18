@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { afterAll, afterEach, beforeAll } from "vitest";
@@ -7,9 +8,14 @@ let mongoServer: MongoMemoryServer;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
 
-  await mongoose.connect(mongoServer.getUri(), {
-    dbName: "attendance_test",
-  });
+  await mongoose.connect(mongoServer.getUri("attendance_test"));
+
+  // Wait for all registered models to finish creating their indexes.
+  await Promise.all(
+    mongoose.modelNames().map((modelName) =>
+      mongoose.model(modelName).init(),
+    ),
+  );
 });
 
 afterEach(async () => {
