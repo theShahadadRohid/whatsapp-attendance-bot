@@ -77,7 +77,7 @@ function createSignature(body: string): string {
     .digest("hex")}`;
 }
 
-function createIncomingMessageBody(): string {
+function createIncomingMessageBody(messageText = "Check in"): string {
   return JSON.stringify({
     object: "whatsapp_business_account",
     entry: [
@@ -93,7 +93,7 @@ function createIncomingMessageBody(): string {
                   timestamp: "1763300000",
                   type: "text",
                   text: {
-                    body: "Check in",
+                    body: messageText,
                   },
                 },
               ],
@@ -520,6 +520,292 @@ describe("WhatsApp webhook", () => {
         mockServices.sendWhatsAppTextMessage,
       ).toHaveBeenCalledOnce();
     });
+
+
+it("checks in an active employee using the IN command", async () => {
+  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+    status: "active",
+    employee: {
+      _id: {
+        toString: () => "employee-id-123",
+      },
+      employeeCode: "EMP001",
+      isActive: true,
+    },
+  });
+
+  const rawBody = createIncomingMessageBody("IN");
+
+  const response = await request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
+
+  expect(response.status).toBe(200);
+
+  expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
+  expect(mockServices.checkInEmployee).toHaveBeenCalledWith(
+    "employee-id-123",
+    {},
+  );
+
+  expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+  expect(
+    mockServices.markWhatsAppMessageProcessed,
+  ).toHaveBeenCalledOnce();
+
+  expect(
+    mockServices.sendWhatsAppTextMessage,
+  ).toHaveBeenCalledOnce();
+});
+
+it("checks in an active employee with a reason", async () => {
+  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+    status: "active",
+    employee: {
+      _id: {
+        toString: () => "employee-id-123",
+      },
+      employeeCode: "EMP001",
+      isActive: true,
+    },
+  });
+
+  const rawBody = createIncomingMessageBody(
+    "IN reason: Traffic jam",
+  );
+
+  const response = await request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
+
+  expect(response.status).toBe(200);
+
+  expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
+  expect(mockServices.checkInEmployee).toHaveBeenCalledWith(
+    "employee-id-123",
+    { reason: "Traffic jam" },
+  );
+
+  expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+  expect(
+    mockServices.markWhatsAppMessageProcessed,
+  ).toHaveBeenCalledOnce();
+});
+
+it("checks out an active employee using the OUT command", async () => {
+  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+    status: "active",
+    employee: {
+      _id: {
+        toString: () => "employee-id-123",
+      },
+      employeeCode: "EMP001",
+      isActive: true,
+    },
+  });
+
+  const rawBody = createIncomingMessageBody("OUT");
+
+  const response = await request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
+
+  expect(response.status).toBe(200);
+
+  expect(mockServices.checkOutEmployee).toHaveBeenCalledOnce();
+  expect(mockServices.checkOutEmployee).toHaveBeenCalledWith(
+    "employee-id-123",
+    {},
+  );
+
+  expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+
+  expect(
+    mockServices.markWhatsAppMessageProcessed,
+  ).toHaveBeenCalledOnce();
+
+  expect(
+    mockServices.sendWhatsAppTextMessage,
+  ).toHaveBeenCalledOnce();
+});
+
+it("checks out an active employee with a note", async () => {
+  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+    status: "active",
+    employee: {
+      _id: {
+        toString: () => "employee-id-123",
+      },
+      employeeCode: "EMP001",
+      isActive: true,
+    },
+  });
+
+  const rawBody = createIncomingMessageBody(
+    "OUT note: Personal work",
+  );
+
+  const response = await request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
+
+  expect(response.status).toBe(200);
+
+  expect(mockServices.checkOutEmployee).toHaveBeenCalledOnce();
+  expect(mockServices.checkOutEmployee).toHaveBeenCalledWith(
+    "employee-id-123",
+    { note: "Personal work" },
+  );
+
+  expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+
+  expect(
+    mockServices.markWhatsAppMessageProcessed,
+  ).toHaveBeenCalledOnce();
+});
+
+
+    it("ignores an already processed WhatsApp message", async () => {
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+        status: "active",
+        employee: {
+          _id: {
+            toString: () => "employee-id-123",
+          },
+          employeeCode: "EMP001",
+          isActive: true,
+        },
+      });
+
+      mockServices.claimWhatsAppMessage.mockResolvedValue({
+        status: "duplicate",
+      });
+
+      const rawBody = createIncomingMessageBody("IN");
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
+
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.markWhatsAppMessageProcessed,
+      ).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.sendWhatsAppTextMessage,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("ignores a WhatsApp message that is currently being processed", async () => {
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+        status: "active",
+        employee: {
+          _id: {
+            toString: () => "employee-id-123",
+          },
+          employeeCode: "EMP001",
+          isActive: true,
+        },
+      });
+
+      mockServices.claimWhatsAppMessage.mockResolvedValue({
+        status: "in_progress",
+      });
+
+      const rawBody = createIncomingMessageBody("IN");
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
+
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.markWhatsAppMessageProcessed,
+      ).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.sendWhatsAppTextMessage,
+      ).not.toHaveBeenCalled();
+    });
+
+
+    it("marks an unexpected attendance error as failed and returns 500", async () => {
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+        status: "active",
+        employee: {
+          _id: {
+            toString: () => "employee-id-123",
+          },
+          employeeCode: "EMP001",
+          isActive: true,
+        },
+      });
+
+      const processingError = new Error("Database unavailable");
+
+      mockServices.checkInEmployee.mockRejectedValue(processingError);
+
+      const rawBody = createIncomingMessageBody("IN");
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(500);
+
+      expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
+
+      expect(
+        mockServices.markWhatsAppMessageFailed,
+      ).toHaveBeenCalledOnce();
+
+      expect(
+        mockServices.markWhatsAppMessageFailed,
+      ).toHaveBeenCalledWith(
+        "wamid.test123",
+        "test-lease-token",
+        processingError,
+      );
+
+      expect(
+        mockServices.markWhatsAppMessageProcessed,
+      ).not.toHaveBeenCalled();
+
+      expect(
+        mockServices.sendWhatsAppTextMessage,
+      ).not.toHaveBeenCalled();
+    });
+
+
+
 
     it("acknowledges duplicate unknown-contact messages", async () => {
       mockServices.trackUnknownContact.mockResolvedValue({
