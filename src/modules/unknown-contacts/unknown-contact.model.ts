@@ -5,9 +5,16 @@ const unknownContactSchema = new Schema(
   {
     phoneNumber: {
       type: String,
-      required: true,
-      unique: true,
       trim: true,
+      sparse: true,
+      unique: true,
+    },
+
+    whatsappBusinessScopedUserId: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
     },
 
     attemptCount: {

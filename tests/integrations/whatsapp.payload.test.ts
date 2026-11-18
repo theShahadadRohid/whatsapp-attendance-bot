@@ -233,4 +233,133 @@ describe("WhatsApp payload parser", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.type).toBe("unsupported");
   });
+
+
+it("parses a BSUID-only incoming text message", () => {
+  const payload = {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              contacts: [
+                {
+                  profile: {
+                    name: "Shahadad",
+                  },
+                  user_id: "US.13491208655302741918",
+                },
+              ],
+              messages: [
+                {
+                  from_user_id: "US.13491208655302741918",
+                  id: "wamid.bsuid123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const result = parseWhatsAppMessages(payload);
+
+  expect(result).toHaveLength(1);
+  expect(result[0]).toEqual({
+    fromUserId: "US.13491208655302741918",
+    contactUserId: "US.13491208655302741918",
+    messageId: "wamid.bsuid123",
+    timestamp: "1763300000",
+    contactName: "Shahadad",
+    type: "text",
+    text: "Check in",
+  });
+});
+
+it("parses a message containing both phone number and BSUID", () => {
+  const payload = {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              contacts: [
+                {
+                  profile: {
+                    name: "Shahadad",
+                  },
+                  wa_id: "8801712345678",
+                  user_id: "US.13491208655302741918",
+                },
+              ],
+              messages: [
+                {
+                  from: "8801712345678",
+                  from_user_id: "US.13491208655302741918",
+                  id: "wamid.both123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const result = parseWhatsAppMessages(payload);
+
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({
+    from: "8801712345678",
+    fromUserId: "US.13491208655302741918",
+    contactUserId: "US.13491208655302741918",
+    type: "text",
+    text: "Check in",
+  });
+});
+
+it("ignores messages without either phone number or BSUID", () => {
+  const payload = {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messages: [
+                {
+                  id: "wamid.noidentity",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  expect(parseWhatsAppMessages(payload)).toEqual([]);
+});
+
 });

@@ -27,6 +27,13 @@ const employeeSchema = new Schema(
       trim: true
     },
 
+    whatsappBusinessScopedUserId: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
+    },
+
     employmentType: {
       type: String,
       enum: EMPLOYMENT_TYPES,
@@ -38,13 +45,6 @@ const employeeSchema = new Schema(
       trim: true,
       maxlength: 80,
       default: undefined
-    },
-
-    whatsappBusinessScopedUserId: {
-      type: String,
-      trim: true,
-      sparse: true,
-      unique: true,
     },
 
     isActive: {

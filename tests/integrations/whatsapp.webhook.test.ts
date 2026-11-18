@@ -11,7 +11,7 @@ const mockEnv = vi.hoisted(() => ({
 }));
 
 const mockServices = vi.hoisted(() => ({
-  findEmployeeByWhatsAppNumber: vi.fn(),
+  findEmployeeByWhatsAppIdentity: vi.fn(),
   trackUnknownContact: vi.fn(),
 }));
 
@@ -22,13 +22,14 @@ vi.mock("../../src/config/env.js", () => ({
 vi.mock("../../src/common/logging/logger.js", () => ({
   logger: {
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
   },
 }));
 
 vi.mock("../../src/modules/employees/employee.service.js", () => ({
-  findEmployeeByWhatsAppNumber:
-    mockServices.findEmployeeByWhatsAppNumber,
+  findEmployeeByWhatsAppIdentity:
+    mockServices.findEmployeeByWhatsAppIdentity,
 }));
 
 vi.mock("../../src/modules/unknown-contacts/unknown-contact.service.js", () => ({
@@ -77,6 +78,63 @@ function createIncomingMessageBody(): string {
   });
 }
 
+function createBsuidOnlyMessageBody(): string {
+  return JSON.stringify({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messages: [
+                {
+                  from_user_id: "bsuid.test123",
+                  id: "wamid.bsuid123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function createCombinedIdentityMessageBody(): string {
+  return JSON.stringify({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messages: [
+                {
+                  from: "8801712345678",
+                  from_user_id: "bsuid.test123",
+                  id: "wamid.combined123",
+                  timestamp: "1763300000",
+                  type: "text",
+                  text: {
+                    body: "Check in",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
 describe("WhatsApp webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -84,7 +142,7 @@ describe("WhatsApp webhook", () => {
     mockEnv.WHATSAPP_VERIFY_TOKEN = "test-verify-token";
     mockEnv.WHATSAPP_APP_SECRET = "test-app-secret";
 
-    mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+    mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
       status: "not_found",
     });
 
@@ -234,7 +292,7 @@ describe("WhatsApp webhook", () => {
       );
     });
 
-    it("tracks an unknown contact", async () => {
+    it("tracks an unknown contact using the phone number", async () => {
       const rawBody = createIncomingMessageBody();
 
       const response = await request(app)
@@ -246,8 +304,10 @@ describe("WhatsApp webhook", () => {
       expect(response.status).toBe(200);
 
       expect(
-        mockServices.findEmployeeByWhatsAppNumber,
-      ).toHaveBeenCalledWith("8801712345678");
+        mockServices.findEmployeeByWhatsAppIdentity,
+      ).toHaveBeenCalledWith({
+        phoneNumber: "8801712345678",
+      });
 
       expect(
         mockServices.trackUnknownContact,
@@ -257,9 +317,84 @@ describe("WhatsApp webhook", () => {
       );
     });
 
+    it("tracks a BSUID-only unknown contact", async () => {
+      const rawBody = createBsuidOnlyMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(
+        mockServices.findEmployeeByWhatsAppIdentity,
+      ).toHaveBeenCalledWith({
+        bsuid: "bsuid.test123",
+      });
+
+      expect(
+        mockServices.trackUnknownContact,
+      ).toHaveBeenCalledWith(
+        { bsuid: "bsuid.test123" },
+        "wamid.bsuid123",
+      );
+    });
+
+    it("uses BSUID when both phone number and BSUID are available", async () => {
+      const rawBody = createCombinedIdentityMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+
+      expect(
+        mockServices.findEmployeeByWhatsAppIdentity,
+      ).toHaveBeenCalledWith({
+        phoneNumber: "8801712345678",
+        bsuid: "bsuid.test123",
+      });
+
+      expect(
+        mockServices.trackUnknownContact,
+      ).toHaveBeenCalledWith(
+        { bsuid: "bsuid.test123" },
+        "wamid.combined123",
+      );
+    });
+
+    it("does not track a mismatched identity as an unknown contact", async () => {
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
+        status: "identity_mismatch",
+      });
+
+      const rawBody = createCombinedIdentityMessageBody();
+
+      const response = await request(app)
+        .post("/")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", createSignature(rawBody))
+        .send(rawBody);
+
+      expect(response.status).toBe(200);
+      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
     it("does not track an inactive employee as an unknown contact", async () => {
-      mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
         status: "inactive",
+        employee: {
+          _id: {
+            toString: () => "employee-id-123",
+          },
+          employeeCode: "EMP001",
+        },
       });
 
       const rawBody = createIncomingMessageBody();
@@ -275,7 +410,7 @@ describe("WhatsApp webhook", () => {
     });
 
     it("does not track an active employee as an unknown contact", async () => {
-      mockServices.findEmployeeByWhatsAppNumber.mockResolvedValue({
+      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
         status: "active",
         employee: {
           _id: {

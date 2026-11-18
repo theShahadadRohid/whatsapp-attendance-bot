@@ -6,6 +6,10 @@ const RESTRICTION_DURATION_MS = 24 * 60 * 60 * 1000;
 const MAX_STORED_MESSAGE_IDS = 100;
 const MAX_UPDATE_RETRIES = 20;
 
+export type UnknownContactIdentity =
+  | { phoneNumber: string; bsuid?: never }
+  | { bsuid: string; phoneNumber?: never };
+
 export type UnknownContactResult =
   | { status: "tracked"; attemptCount: number }
   | { status: "restricted"; restrictedUntil: Date }
@@ -20,21 +24,77 @@ function isDuplicateKeyError(error: unknown): boolean {
   );
 }
 
-export async function trackUnknownContact(
+// Backward-compatible phone-number overload.
+export function trackUnknownContact(
   phoneNumber: string,
+  messageId: string,
+  now?: Date,
+): Promise<UnknownContactResult>;
+
+// BSUID or phone-number identity overload.
+export function trackUnknownContact(
+  identity: UnknownContactIdentity,
+  messageId: string,
+  now?: Date,
+): Promise<UnknownContactResult>;
+
+export async function trackUnknownContact(
+  identityOrPhone: string | UnknownContactIdentity,
   messageId: string,
   now = new Date(),
 ): Promise<UnknownContactResult> {
+  let identityValue: string;
+
+  let identityFilter:
+    | { phoneNumber: string }
+    | { whatsappBusinessScopedUserId: string };
+
+  let identityData:
+    | { phoneNumber: string }
+    | { whatsappBusinessScopedUserId: string };
+
+  if (typeof identityOrPhone === "string") {
+    identityValue = identityOrPhone.trim();
+
+    if (!identityValue) {
+      throw new Error("Unknown contact identity cannot be empty.");
+    }
+
+    identityFilter = { phoneNumber: identityValue };
+    identityData = { phoneNumber: identityValue };
+  } else if (typeof identityOrPhone.bsuid === "string") {
+    identityValue = identityOrPhone.bsuid.trim();
+
+    if (!identityValue) {
+      throw new Error("Unknown contact identity cannot be empty.");
+    }
+
+    identityFilter = {
+      whatsappBusinessScopedUserId: identityValue,
+    };
+
+    identityData = {
+      whatsappBusinessScopedUserId: identityValue,
+    };
+  } else {
+    identityValue = identityOrPhone.phoneNumber.trim();
+
+    if (!identityValue) {
+      throw new Error("Unknown contact identity cannot be empty.");
+    }
+
+    identityFilter = { phoneNumber: identityValue };
+    identityData = { phoneNumber: identityValue };
+  }
+
   for (let retry = 0; retry < MAX_UPDATE_RETRIES; retry += 1) {
-    const contact = await UnknownContactModel.findOne({
-      phoneNumber,
-    });
+    const contact = await UnknownContactModel.findOne(identityFilter);
 
     // First message from this unknown contact.
     if (!contact) {
       try {
         await UnknownContactModel.create({
-          phoneNumber,
+          ...identityData,
           attemptCount: 1,
           lastMessageAt: now,
           processedMessageIds: [messageId],
@@ -123,9 +183,9 @@ export async function trackUnknownContact(
         },
       },
       {
-  returnDocument: "after",
-  runValidators: true,
-},
+        returnDocument: "after",
+        runValidators: true,
+      },
     );
 
     // Someone else updated the record. Read the latest state and retry.
@@ -147,6 +207,6 @@ export async function trackUnknownContact(
   }
 
   throw new Error(
-    `Could not update unknown contact ${phoneNumber} after repeated concurrent changes.`,
+    `Could not update unknown contact ${identityValue} after repeated concurrent changes.`,
   );
 }

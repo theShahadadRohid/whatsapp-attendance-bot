@@ -46,7 +46,48 @@ function getDuplicateEmployeeError(error: unknown): AppError | null {
     );
   }
 
+  if (
+    "whatsappBusinessScopedUserId" in keyPattern ||
+    "whatsappBusinessScopedUserId" in keyValue
+  ) {
+    return new AppError(
+      "This WhatsApp identity is already linked to another employee.",
+      409,
+      "EMPLOYEE_WHATSAPP_ID_EXISTS",
+    );
+  }
+
   return null;
+}
+
+function isDuplicateWhatsAppIdentityError(error: unknown): boolean {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    error.code !== 11000
+  ) {
+    return false;
+  }
+
+  const keyPattern =
+    "keyPattern" in error &&
+    typeof error.keyPattern === "object" &&
+    error.keyPattern !== null
+      ? error.keyPattern
+      : {};
+
+  const keyValue =
+    "keyValue" in error &&
+    typeof error.keyValue === "object" &&
+    error.keyValue !== null
+      ? error.keyValue
+      : {};
+
+  return (
+    "whatsappBusinessScopedUserId" in keyPattern ||
+    "whatsappBusinessScopedUserId" in keyValue
+  );
 }
 
 function handleDuplicateEmployeeError(error: unknown): never {
@@ -188,7 +229,6 @@ export async function deactivateEmployee(id: string) {
   return employee;
 }
 
-
 function getPhoneNumberCandidates(phoneNumber: string): string[] {
   let digits = phoneNumber.replace(/\D/g, "");
 
@@ -209,7 +249,6 @@ function getPhoneNumberCandidates(phoneNumber: string): string[] {
   // Bangladesh: 8801712345678 -> 01712345678
   if (digits.startsWith("880")) {
     const localNumber = `0${digits.slice(3)}`;
-
     candidates.add(localNumber);
   }
 
@@ -249,4 +288,152 @@ export async function findEmployeeByWhatsAppNumber(
     status: "active" as const,
     employee,
   };
+}
+
+function isPhoneNumberMatch(
+  incomingPhoneNumber: string,
+  employeePhoneNumber: string,
+): boolean {
+  const incomingCandidates = getPhoneNumberCandidates(incomingPhoneNumber);
+  const employeeCandidates = getPhoneNumberCandidates(employeePhoneNumber);
+
+  return employeeCandidates.some((candidate) =>
+    incomingCandidates.includes(candidate),
+  );
+}
+
+export async function findEmployeeByWhatsAppIdentity(input: {
+  phoneNumber?: string;
+  bsuid?: string;
+}) {
+  const phoneNumber = input.phoneNumber?.trim();
+  const bsuid = input.bsuid?.trim();
+
+  // Case 1: A BSUID is already linked.
+  if (bsuid) {
+    const linkedEmployee = await EmployeeModel.findOne({
+      whatsappBusinessScopedUserId: bsuid,
+    }).lean();
+
+    if (linkedEmployee) {
+      if (
+        phoneNumber &&
+        !isPhoneNumberMatch(phoneNumber, linkedEmployee.phoneNumber)
+      ) {
+        return { status: "identity_mismatch" as const };
+      }
+
+      if (!linkedEmployee.isActive) {
+        return {
+          status: "inactive" as const,
+          employee: linkedEmployee,
+        };
+      }
+
+      return {
+        status: "active" as const,
+        employee: linkedEmployee,
+      };
+    }
+  }
+
+  // Case 2: An unknown BSUID without a phone number
+  // cannot safely identify an employee.
+  if (!phoneNumber) {
+    return { status: "not_found" as const };
+  }
+
+  const phoneCandidates = getPhoneNumberCandidates(phoneNumber);
+
+  if (phoneCandidates.length === 0) {
+    return { status: "not_found" as const };
+  }
+
+  // Find the employee using their registered phone number.
+  const employee = await EmployeeModel.findOne({
+    phoneNumber: { $in: phoneCandidates },
+  }).lean();
+
+  if (!employee) {
+    return { status: "not_found" as const };
+  }
+
+  if (!employee.isActive) {
+    return {
+      status: "inactive" as const,
+      employee,
+    };
+  }
+
+  // Phone-only identification: there is no BSUID to link.
+  if (!bsuid) {
+    return {
+      status: "active" as const,
+      employee,
+    };
+  }
+
+  // Never overwrite an employee's existing BSUID.
+  if (employee.whatsappBusinessScopedUserId) {
+    return { status: "identity_mismatch" as const };
+  }
+
+  // Atomically link the BSUID only if the employee is still active
+  // and does not already have a BSUID.
+  try {
+    const linkedEmployee = await EmployeeModel.findOneAndUpdate(
+      {
+        _id: employee._id,
+        isActive: true,
+        whatsappBusinessScopedUserId: { $exists: false },
+      },
+      {
+        $set: {
+          whatsappBusinessScopedUserId: bsuid,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+      },
+    ).lean();
+
+    if (linkedEmployee) {
+      return {
+        status: "active" as const,
+        employee: linkedEmployee,
+      };
+    }
+
+    // Another request may have linked or deactivated this employee.
+    const currentEmployee = await EmployeeModel.findById(
+      employee._id,
+    ).lean();
+
+    if (
+      currentEmployee?.whatsappBusinessScopedUserId === bsuid
+    ) {
+      if (!currentEmployee.isActive) {
+        return {
+          status: "inactive" as const,
+          employee: currentEmployee,
+        };
+      }
+
+      return {
+        status: "active" as const,
+        employee: currentEmployee,
+      };
+    }
+
+    return { status: "identity_mismatch" as const };
+  } catch (error) {
+    // The unique BSUID index prevents the same BSUID from being
+    // assigned to multiple employees.
+    if (isDuplicateWhatsAppIdentityError(error)) {
+      return { status: "identity_mismatch" as const };
+    }
+
+    handleDuplicateEmployeeError(error);
+  }
 }

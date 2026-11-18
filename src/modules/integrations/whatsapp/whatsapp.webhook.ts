@@ -4,9 +4,10 @@ import express, { Router } from "express";
 
 import { env } from "../../../config/env.js";
 import { logger } from "../../../common/logging/logger.js";
-import { findEmployeeByWhatsAppNumber } from "../../employees/employee.service.js";
-import { parseWhatsAppMessages } from "./whatsapp.payload.js";
+import { findEmployeeByWhatsAppIdentity } from "../../employees/employee.service.js";
 import { trackUnknownContact } from "../../unknown-contacts/unknown-contact.service.js";
+import { parseWhatsAppMessages } from "./whatsapp.payload.js";
+
 export const whatsappWebhookRouter = Router();
 
 /**
@@ -123,7 +124,33 @@ whatsappWebhookRouter.post(
 
     try {
       for (const message of messages) {
-        const result = await findEmployeeByWhatsAppNumber(message.from);
+        if (!message.from && !message.fromUserId) {
+          logger.warn(
+            { messageId: message.messageId },
+            "WhatsApp message has no usable sender identity.",
+          );
+
+          continue;
+        }
+
+        // Resolve the employee using the available WhatsApp identities.
+        const result = await findEmployeeByWhatsAppIdentity({
+  ...(message.from ? { phoneNumber: message.from } : {}),
+  ...(message.fromUserId ? { bsuid: message.fromUserId } : {}),
+});
+
+        if (result.status === "identity_mismatch") {
+          logger.warn(
+            {
+              messageId: message.messageId,
+              hasPhoneNumber: Boolean(message.from),
+              hasBsuid: Boolean(message.fromUserId),
+            },
+            "WhatsApp phone number and BSUID do not match the same employee.",
+          );
+
+          continue;
+        }
 
         if (result.status === "active") {
           logger.info(
@@ -140,43 +167,57 @@ whatsappWebhookRouter.post(
 
         if (result.status === "inactive") {
           logger.info(
-            { from: message.from },
+            {
+              employeeId: result.employee._id.toString(),
+              employeeCode: result.employee.employeeCode,
+            },
             "WhatsApp message received from inactive employee.",
           );
 
           continue;
         }
 
-        const trackingResult = await trackUnknownContact(
-  message.from,
-  message.messageId,
-);
+        // Prefer BSUID when available; otherwise use the phone number.
+        const trackingResult = message.fromUserId
+          ? await trackUnknownContact(
+              { bsuid: message.fromUserId },
+              message.messageId,
+            )
+          : await trackUnknownContact(
+              message.from!,
+              message.messageId,
+            );
 
-if (trackingResult.status === "tracked") {
-  logger.info(
-    {
-      from: message.from,
-      attemptCount: trackingResult.attemptCount,
-    },
-    "Unknown WhatsApp contact tracked.",
-  );
-} else if (trackingResult.status === "restricted") {
-  logger.info(
-    {
-      from: message.from,
-      restrictedUntil: trackingResult.restrictedUntil,
-    },
-    "Unknown WhatsApp contact is temporarily restricted.",
-  );
-} else {
-  logger.info(
-    {
-      from: message.from,
-      messageId: message.messageId,
-    },
-    "Duplicate WhatsApp message from unknown contact ignored.",
-  );
-}
+        const identityLog = {
+          hasPhoneNumber: Boolean(message.from),
+          hasBsuid: Boolean(message.fromUserId),
+        };
+
+        if (trackingResult.status === "tracked") {
+          logger.info(
+            {
+              ...identityLog,
+              attemptCount: trackingResult.attemptCount,
+            },
+            "Unknown WhatsApp contact tracked.",
+          );
+        } else if (trackingResult.status === "restricted") {
+          logger.info(
+            {
+              ...identityLog,
+              restrictedUntil: trackingResult.restrictedUntil,
+            },
+            "Unknown WhatsApp contact is temporarily restricted.",
+          );
+        } else {
+          logger.info(
+            {
+              ...identityLog,
+              messageId: message.messageId,
+            },
+            "Duplicate WhatsApp message from unknown contact ignored.",
+          );
+        }
       }
     } catch (error) {
       logger.error(

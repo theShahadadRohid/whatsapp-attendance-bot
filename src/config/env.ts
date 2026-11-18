@@ -50,6 +50,8 @@ const envSchema = z
     WHATSAPP_PHONE_NUMBER_ID: optionalString,
     WHATSAPP_APP_SECRET: optionalString,
 
+    WHATSAPP_API_VERSION: z.string().default("v27.0"),
+
     OFFICE_LATITUDE: optionalCoordinate(-90, 90),
     OFFICE_LONGITUDE: optionalCoordinate(-180, 180),
     OFFICE_LOCATION_RADIUS_METERS: z.coerce
