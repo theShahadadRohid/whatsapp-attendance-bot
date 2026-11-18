@@ -1,7 +1,9 @@
+
 import { env } from "../../../config/env.js";
 
 export interface SendWhatsAppTextInput {
-  to: string;
+  to?: string;
+  recipient?: string;
   body: string;
   previewUrl?: boolean;
 }
@@ -54,14 +56,21 @@ export async function sendWhatsAppTextMessage(
     );
   }
 
-  const to = input.to.trim();
+  const to = input.to?.trim();
+  const recipient = input.recipient?.trim();
   const body = input.body.trim();
 
-  if (!to || !body) {
-    throw new WhatsAppApiError(
-      "WhatsApp recipient and message body are required.",
-    );
-  }
+  if ((!to && !recipient) || !body) {
+  throw new WhatsAppApiError(
+    "WhatsApp recipient and message body are required.",
+  );
+}
+
+if (to && recipient) {
+  throw new WhatsAppApiError(
+    "Provide exactly one WhatsApp recipient.",
+  );
+}
 
   const url =
     `https://graph.facebook.com/` +
@@ -80,7 +89,7 @@ export async function sendWhatsAppTextMessage(
       body: JSON.stringify({
         messaging_product: "whatsapp",
         recipient_type: "individual",
-        to,
+        ...(to ? { to } : { recipient }),
         type: "text",
         text: {
           preview_url: input.previewUrl ?? false,

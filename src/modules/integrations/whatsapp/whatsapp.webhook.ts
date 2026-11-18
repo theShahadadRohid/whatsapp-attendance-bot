@@ -2,43 +2,40 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
 
-import { env } from "../../../config/env.js";
+import { AppError } from "../../../common/errors/app-error.js";
 import { logger } from "../../../common/logging/logger.js";
+import { env } from "../../../config/env.js";
+import {
+  checkInEmployee,
+  checkOutEmployee,
+} from "../../attendance/attendance.service.js";
 import { findEmployeeByWhatsAppIdentity } from "../../employees/employee.service.js";
 import { trackUnknownContact } from "../../unknown-contacts/unknown-contact.service.js";
+import { sendWhatsAppTextMessage } from "./whatsapp.client.js";
+import {
+  markWhatsAppMessageFailed,
+  markWhatsAppMessageProcessed,
+  claimWhatsAppMessage,
+} from "./whatsapp-message.service.js";
+import { parseWhatsAppCommand } from "./whatsapp.command.js";
 import { parseWhatsAppMessages } from "./whatsapp.payload.js";
 
 export const whatsappWebhookRouter = Router();
 
-/**
- * Meta calls this endpoint when registering the webhook.
- * We must return the challenge only when the verify token matches.
- */
-whatsappWebhookRouter.get("/", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+const HELP_MESSAGE = [
+  "Welcome to the attendance system.",
+  "",
+  "Available commands:",
+  "IN - Check in",
+  "IN reason: Traffic jam - Check in with a reason",
+  "OUT - Check out",
+  "OUT note: Personal work - Check out with a note",
+  "HELP - Show these instructions",
+].join("\n");
 
-  if (!env.WHATSAPP_VERIFY_TOKEN) {
-    res.status(503).send("WhatsApp webhook verification is not configured.");
-    return;
-  }
+const INVALID_COMMAND_MESSAGE =
+  "Invalid command. Send HELP to see the available attendance commands.";
 
-  if (
-    mode !== "subscribe" ||
-    token !== env.WHATSAPP_VERIFY_TOKEN ||
-    typeof challenge !== "string"
-  ) {
-    res.status(403).send("Webhook verification failed.");
-    return;
-  }
-
-  res.status(200).type("text/plain").send(challenge);
-});
-
-/**
- * Verifies Meta's HMAC-SHA256 signature using the original request body.
- */
 function isValidSignature(
   rawBody: Buffer,
   signature: string | undefined,
@@ -66,9 +63,240 @@ function isValidSignature(
   );
 }
 
+function formatAttendanceTime(
+  date: Date,
+  timeZone: string,
+): string {
+  return new Intl.DateTimeFormat("en-BD", {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
+async function sendReply(
+  message: {
+    messageId: string;
+    from?: string;
+    fromUserId?: string;
+  },
+  body: string,
+): Promise<void> {
+  const phoneNumber = message.from?.trim();
+  const bsuid = message.fromUserId?.trim();
+
+  if (!phoneNumber && !bsuid) {
+    logger.warn(
+      { messageId: message.messageId },
+      "Cannot reply because the sender has no usable recipient identifier.",
+    );
+    return;
+  }
+
+  try {
+if (phoneNumber) {
+  await sendWhatsAppTextMessage({
+    to: phoneNumber,
+    body,
+  });
+} else if (bsuid) {
+  await sendWhatsAppTextMessage({
+    recipient: bsuid,
+    body,
+  });
+}
+  } catch (error) {
+    // The attendance operation is already marked processed.
+    // A failed reply must not cause the attendance action to run again.
+    logger.error(
+      {
+        err: error,
+        messageId: message.messageId,
+      },
+      "Failed to send WhatsApp reply.",
+    );
+  }
+}
+
+async function handleRegisteredEmployeeMessage(
+  message: Awaited<
+    ReturnType<typeof parseWhatsAppMessages>
+  >[number],
+  employee: {
+    _id: { toString(): string };
+    employeeCode: string;
+    isActive: boolean;
+  },
+): Promise<void> {
+  const employeeId = employee._id.toString();
+
+  const claim = await claimWhatsAppMessage({
+    messageId: message.messageId,
+    employeeId,
+  });
+
+  if (claim.status !== "claimed") {
+    logger.info(
+      {
+        messageId: message.messageId,
+        status: claim.status,
+        employeeCode: employee.employeeCode,
+      },
+      "Duplicate or currently processing WhatsApp message ignored.",
+    );
+
+    return;
+  }
+
+  let replyMessage: string;
+
+  try {
+    if (!employee.isActive) {
+      replyMessage =
+        "Your employee account is currently inactive. Please contact your manager.";
+    } else if (message.type !== "text" || !message.text) {
+      replyMessage =
+        "I can only process text attendance commands. Send HELP for instructions.";
+    } else {
+      const command = parseWhatsAppCommand(message.text);
+
+      switch (command.type) {
+        case "help": {
+          replyMessage = HELP_MESSAGE;
+          break;
+        }
+
+        case "invalid": {
+          replyMessage = INVALID_COMMAND_MESSAGE;
+          break;
+        }
+
+        case "check_in": {
+          const attendance = await checkInEmployee(
+            employeeId,
+            command.reason
+              ? { reason: command.reason }
+              : {},
+          );
+
+          const timeZone = attendance.timeZone;
+          if (!attendance.checkInAt) {
+  throw new Error(
+    "Check-in was created without a check-in timestamp.",
+  );
+}
+
+const checkInTime = formatAttendanceTime(
+  attendance.checkInAt,
+  timeZone,
+);
+
+          replyMessage =
+            `Check-in recorded successfully at ${checkInTime}.` +
+            (attendance.status === "late"
+              ? " Your attendance has been marked late."
+              : " You are marked present.");
+
+          break;
+        }
+
+        case "check_out": {
+          const attendance = await checkOutEmployee(
+            employeeId,
+            command.note
+              ? { note: command.note }
+              : {},
+          );
+
+          const timeZone = attendance.timeZone;
+          const checkOutTime = formatAttendanceTime(
+            attendance.checkOutAt!,
+            timeZone,
+          );
+
+          replyMessage =
+            `Check-out recorded successfully at ${checkOutTime}.` +
+            (attendance.checkOutStatus === "early"
+              ? " Your checkout has been marked early."
+              : "");
+
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof AppError) {
+      // Expected attendance validation errors are final results.
+      // Do not retry the same command.
+      replyMessage = error.message;
+    } else {
+      // Unexpected failures can be retried after the lease expires.
+      await markWhatsAppMessageFailed(
+        message.messageId,
+        claim.leaseToken,
+        error,
+      );
+
+      throw error;
+    }
+  }
+
+  const markedProcessed = await markWhatsAppMessageProcessed(
+    message.messageId,
+    claim.leaseToken,
+  );
+
+  if (!markedProcessed) {
+    logger.warn(
+      { messageId: message.messageId },
+      "WhatsApp message processing lease was lost before completion.",
+    );
+
+    return;
+  }
+
+  await sendReply(message, replyMessage);
+
+  logger.info(
+    {
+      employeeId,
+      employeeCode: employee.employeeCode,
+      messageId: message.messageId,
+    },
+    "WhatsApp employee message processed.",
+  );
+}
+
 /**
- * Receives WhatsApp webhook notifications.
- * The raw body is required for signature verification.
+ * Meta calls this endpoint when registering the webhook.
+ */
+whatsappWebhookRouter.get("/", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (!env.WHATSAPP_VERIFY_TOKEN) {
+    res.status(503).send(
+      "WhatsApp webhook verification is not configured.",
+    );
+    return;
+  }
+
+  if (
+    mode !== "subscribe" ||
+    token !== env.WHATSAPP_VERIFY_TOKEN ||
+    typeof challenge !== "string"
+  ) {
+    res.status(403).send("Webhook verification failed.");
+    return;
+  }
+
+  res.status(200).type("text/plain").send(challenge);
+});
+
+/**
+ * Receives and processes WhatsApp webhook notifications.
  */
 whatsappWebhookRouter.post(
   "/",
@@ -133,11 +361,14 @@ whatsappWebhookRouter.post(
           continue;
         }
 
-        // Resolve the employee using the available WhatsApp identities.
         const result = await findEmployeeByWhatsAppIdentity({
-  ...(message.from ? { phoneNumber: message.from } : {}),
-  ...(message.fromUserId ? { bsuid: message.fromUserId } : {}),
-});
+          ...(message.from
+            ? { phoneNumber: message.from }
+            : {}),
+          ...(message.fromUserId
+            ? { bsuid: message.fromUserId }
+            : {}),
+        });
 
         if (result.status === "identity_mismatch") {
           logger.warn(
@@ -152,32 +383,18 @@ whatsappWebhookRouter.post(
           continue;
         }
 
-        if (result.status === "active") {
-          logger.info(
-            {
-              employeeId: result.employee._id.toString(),
-              employeeCode: result.employee.employeeCode,
-              messageType: message.type,
-            },
-            "WhatsApp message received from registered employee.",
+        if (
+          result.status === "active" ||
+          result.status === "inactive"
+        ) {
+          await handleRegisteredEmployeeMessage(
+            message,
+            result.employee,
           );
 
           continue;
         }
 
-        if (result.status === "inactive") {
-          logger.info(
-            {
-              employeeId: result.employee._id.toString(),
-              employeeCode: result.employee.employeeCode,
-            },
-            "WhatsApp message received from inactive employee.",
-          );
-
-          continue;
-        }
-
-        // Prefer BSUID when available; otherwise use the phone number.
         const trackingResult = message.fromUserId
           ? await trackUnknownContact(
               { bsuid: message.fromUserId },
@@ -222,7 +439,7 @@ whatsappWebhookRouter.post(
     } catch (error) {
       logger.error(
         { err: error },
-        "Failed to identify WhatsApp message sender.",
+        "Failed to process WhatsApp webhook messages.",
       );
 
       res.sendStatus(500);
