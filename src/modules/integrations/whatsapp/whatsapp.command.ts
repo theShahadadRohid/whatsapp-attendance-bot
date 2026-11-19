@@ -55,12 +55,12 @@ export function parseWhatsAppCommand(
     /^ENROLL\s+([A-Za-z0-9_-]{20,})$/i,
   );
 
-if (enrollmentMatch?.[1]) {
-  return {
-    type: "enroll",
-    token: enrollmentMatch[1],
-  };
-}
+  if (enrollmentMatch?.[1]) {
+    return {
+      type: "enroll",
+      token: enrollmentMatch[1],
+    };
+  }
 
   if (/^YES$/i.test(normalizedMessage)) {
     return { type: "consent" };

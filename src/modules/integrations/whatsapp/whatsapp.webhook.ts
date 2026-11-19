@@ -52,8 +52,27 @@ const ENROLLMENT_REQUIRED_MESSAGE = [
   "Then send: ENROLL <token>",
 ].join("\n");
 
-const INVALID_COMMAND_MESSAGE =
-  "Invalid command. Send HELP to see the available commands.";
+const UNKNOWN_CONTACT_MESSAGE = [
+  "Welcome to our WhatsApp attendance service.",
+  "",
+  "We could not identify this WhatsApp account as an enrolled employee.",
+  "",
+  "If you are an employee:",
+  "1. Contact your manager to receive an enrollment token.",
+  "2. Send ENROLL <token> using your registered phone number.",
+  "3. After verification, reply YES to give consent.",
+  "",
+  "If you need assistance, please contact your manager.",
+].join("\n");
+
+const INVALID_COMMAND_MESSAGE = [
+  "Sorry, I couldn't understand that command.",
+  "",
+  "Send HELP to see the available commands.",
+].join("\n");
+
+const INACTIVE_EMPLOYEE_MESSAGE =
+  "Your employee account is currently inactive. Please contact your manager.";
 
 function isValidSignature(
   rawBody: Buffer,
@@ -297,7 +316,7 @@ async function handleConsentMessage(
       await finishMessage(
         message,
         claim.leaseToken,
-        "Your employee account is inactive. Please contact your manager.",
+        INACTIVE_EMPLOYEE_MESSAGE,
       );
       return;
     }
@@ -332,14 +351,19 @@ async function handleConsentMessage(
       message,
       claim.leaseToken,
       [
-        "WhatsApp attendance enrollment completed successfully.",
+        `Congratulations, ${employee.fullName}!`,
         "",
-        "You can now use:",
+        "Your WhatsApp attendance enrollment is complete.",
+        "",
+        "You can now use these commands:",
+        "",
         "IN - Check in",
+        "IN reason: Traffic jam - Check in with a reason",
         "OUT - Check out",
+        "OUT note: Personal work - Check out with a note",
         "HELP - Show instructions",
         "",
-        "You can withdraw consent at any time by sending STOP.",
+        "Send STOP anytime to withdraw your consent.",
       ].join("\n"),
     );
 
@@ -466,8 +490,7 @@ async function handleRegisteredEmployeeMessage(
 
   try {
     if (!employee.isActive) {
-      replyMessage =
-        "Your employee account is currently inactive. Please contact your manager.";
+      replyMessage = INACTIVE_EMPLOYEE_MESSAGE;
     } else if (message.type !== "text" || !message.text) {
       replyMessage =
         "I can only process text attendance commands. Send HELP for instructions.";
@@ -484,8 +507,12 @@ async function handleRegisteredEmployeeMessage(
           try {
             await revokeWhatsAppEnrollment(employeeId);
 
-            replyMessage =
-              "Your WhatsApp attendance consent has been withdrawn. Contact your manager if you want to enroll again.";
+            replyMessage = [
+              "Your WhatsApp attendance consent has been withdrawn.",
+              "",
+              "You will no longer be able to use WhatsApp attendance commands.",
+              "Contact your manager if you want to enroll again.",
+            ].join("\n");
           } catch (error) {
             if (error instanceof AppError && error.statusCode === 404) {
               replyMessage =
@@ -815,6 +842,11 @@ whatsappWebhookRouter.post(
             },
             "Unknown WhatsApp contact tracked.",
           );
+
+          // The contact has just messaged us, so send an onboarding
+          // explanation. trackUnknownContact prevents duplicate replies
+          // for repeated webhook deliveries of the same message.
+          await sendReply(message, UNKNOWN_CONTACT_MESSAGE);
         } else if (trackingResult.status === "restricted") {
           logger.info(
             {
