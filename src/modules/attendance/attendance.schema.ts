@@ -1,12 +1,19 @@
 
 import { z } from "zod";
 
+const attendanceLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+
 export const checkInSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
+  location: attendanceLocationSchema.optional(),
 });
 
 export const checkOutSchema = z.object({
   note: z.string().trim().min(1).max(500).optional(),
+  location: attendanceLocationSchema.optional(),
 });
 
 export const attendanceIdSchema = z.object({
@@ -21,7 +28,6 @@ export const employeeAttendanceIdSchema = z.object({
 
 export type CheckInPayload = z.infer<typeof checkInSchema>;
 export type CheckOutPayload = z.infer<typeof checkOutSchema>;
-
 
 export const correctAttendanceSchema = z
   .object({

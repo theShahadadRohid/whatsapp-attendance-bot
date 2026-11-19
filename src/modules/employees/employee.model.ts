@@ -2,6 +2,14 @@
 import { Schema, model, type InferSchemaType } from "mongoose";
 import { EMPLOYMENT_TYPES } from "./employee.types.js";
 
+const locationSchema = new Schema(
+  {
+    latitude: { type: Number, required: true },
+    longitude: { type: Number, required: true },
+  },
+  { _id: false },
+);
+
 const employeeSchema = new Schema(
   {
     employeeCode: {
@@ -10,21 +18,21 @@ const employeeSchema = new Schema(
       unique: true,
       trim: true,
       uppercase: true,
-      maxlength: 30
+      maxlength: 30,
     },
 
     fullName: {
       type: String,
       required: true,
       trim: true,
-      maxlength: 100
+      maxlength: 100,
     },
 
     phoneNumber: {
       type: String,
       required: true,
       unique: true,
-      trim: true
+      trim: true,
     },
 
     whatsappBusinessScopedUserId: {
@@ -37,27 +45,38 @@ const employeeSchema = new Schema(
     employmentType: {
       type: String,
       enum: EMPLOYMENT_TYPES,
-      required: true
+      required: true,
     },
 
     department: {
       type: String,
       trim: true,
       maxlength: 80,
-      default: undefined
+      default: undefined,
     },
 
     isActive: {
       type: Boolean,
       default: true,
-      required: true
-    }
+      required: true,
+    },
+
+    pendingAttendanceAction: {
+      type: String,
+      enum: ["check_in", "check_out"],
+    },
+
+    pendingAttendanceAt: Date,
+
+    pendingAttendanceLocation: {
+      type: locationSchema,
+    },
   },
   {
     timestamps: true,
     versionKey: false,
-    collection: "employees"
-  }
+    collection: "employees",
+  },
 );
 
 employeeSchema.index({ isActive: 1, fullName: 1 });

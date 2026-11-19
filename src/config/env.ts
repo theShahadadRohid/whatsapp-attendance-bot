@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import { z } from "zod";
 import { DEFAULT_PORT } from "../constants/app.constants.js";
@@ -6,7 +5,7 @@ import { DEFAULT_PORT } from "../constants/app.constants.js";
 const optionalString = z.preprocess(
   (value) =>
     typeof value === "string" && value.trim() === "" ? undefined : value,
-  z.string().min(1).optional(),
+  z.string().trim().min(1).optional(),
 );
 
 const optionalCoordinate = (min: number, max: number) =>
@@ -50,10 +49,14 @@ const envSchema = z
     WHATSAPP_PHONE_NUMBER_ID: optionalString,
     WHATSAPP_APP_SECRET: optionalString,
 
-    WHATSAPP_API_VERSION: z.string().default("v27.0"),
+    WHATSAPP_API_VERSION: z
+      .string()
+      .regex(/^v\d+\.\d+$/, "Expected format such as v27.0")
+      .default("v27.0"),
 
     OFFICE_LATITUDE: optionalCoordinate(-90, 90),
     OFFICE_LONGITUDE: optionalCoordinate(-180, 180),
+
     OFFICE_LOCATION_RADIUS_METERS: z.coerce
       .number()
       .int()
@@ -68,9 +71,40 @@ const envSchema = z
     ) {
       context.addIssue({
         code: "custom",
-        message: "OFFICE_LATITUDE and OFFICE_LONGITUDE must be provided together.",
+        message:
+          "OFFICE_LATITUDE and OFFICE_LONGITUDE must be provided together.",
         path: ["OFFICE_LATITUDE"],
       });
+    }
+
+    if (data.NODE_ENV === "production") {
+      const requiredWhatsAppVariables = [
+        "WHATSAPP_VERIFY_TOKEN",
+        "WHATSAPP_ACCESS_TOKEN",
+        "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_APP_SECRET",
+      ] as const;
+
+      for (const key of requiredWhatsAppVariables) {
+        if (!data[key]) {
+          context.addIssue({
+            code: "custom",
+            message: `${key} is required in production.`,
+            path: [key],
+          });
+        }
+      }
+
+      if (
+        data.OFFICE_LATITUDE === undefined ||
+        data.OFFICE_LONGITUDE === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Office coordinates are required in production.",
+          path: ["OFFICE_LATITUDE"],
+        });
+      }
     }
   });
 

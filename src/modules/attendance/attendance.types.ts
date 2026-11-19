@@ -24,6 +24,11 @@ export const CHECK_OUT_STATUSES = [
 
 export type CheckOutStatus = (typeof CHECK_OUT_STATUSES)[number];
 
+export interface AttendanceLocation {
+  latitude: number;
+  longitude: number;
+}
+
 export interface AttendanceRecord {
   employee: Types.ObjectId;
   date: string;
@@ -34,10 +39,12 @@ export interface AttendanceRecord {
   checkInAt?: Date;
   checkInStatus?: CheckInStatus;
   checkInReason?: string;
+  checkInLocation?: AttendanceLocation;
 
   checkOutAt?: Date;
   checkOutStatus?: CheckOutStatus;
   checkOutNote?: string;
+  checkOutLocation?: AttendanceLocation;
 
   isAutoCheckout: boolean;
   needsReview: boolean;

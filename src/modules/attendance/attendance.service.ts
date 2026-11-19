@@ -216,18 +216,21 @@ export async function checkInEmployee(
   }
 
   const attendanceData = {
-    employee: employee._id,
-    date: local.date,
-    timeZone,
-    status: attendanceStatus,
-    checkInAt: now,
-    checkInStatus,
-    ...(input.reason?.trim() && {
-      checkInReason: input.reason.trim(),
-    }),
-    isAutoCheckout: false,
-    needsReview: false,
-  };
+  employee: employee._id,
+  date: local.date,
+  timeZone,
+  status: attendanceStatus,
+  checkInAt: now,
+  checkInStatus,
+  ...(input.reason?.trim() && {
+    checkInReason: input.reason.trim(),
+  }),
+  ...(input.location && {
+    checkInLocation: input.location,
+  }),
+  isAutoCheckout: false,
+  needsReview: false,
+};
 
   try {
     return await Attendance.create(attendanceData);
@@ -315,6 +318,10 @@ export async function checkOutEmployee(
   }
 
   attendance.isAutoCheckout = false;
+
+  if (input.location) {
+  attendance.checkOutLocation = input.location;
+}
 
   return attendance.save();
 }

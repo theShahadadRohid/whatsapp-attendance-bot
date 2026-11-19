@@ -4,22 +4,32 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { logger } from "../../src/common/logging/logger.js";
-
 const mockEnv = vi.hoisted(() => ({
   WHATSAPP_VERIFY_TOKEN: "test-verify-token" as string | undefined,
   WHATSAPP_APP_SECRET: "test-app-secret" as string | undefined,
 }));
 
 const mockServices = vi.hoisted(() => ({
-  findEmployeeByWhatsAppIdentity: vi.fn(),
-  trackUnknownContact: vi.fn(),
-
+  employee: {
+    _id: { toString: () => "employee-id-123" },
+    fullName: "Test Employee",
+    employeeCode: "EMP001",
+    isActive: true,
+    pendingAttendanceAction: undefined as
+      | "check_in"
+      | "check_out"
+      | undefined,
+    pendingAttendanceLocation: undefined as
+      | { latitude: number; longitude: number }
+      | undefined,
+  },
+  lookupStatus: "active" as "active" | "inactive" | "not_found",
+  findEmployeeByWhatsAppNumber: vi.fn(),
+  updateEmployee: vi.fn(),
+  validateOfficeLocation: vi.fn(),
   checkInEmployee: vi.fn(),
   checkOutEmployee: vi.fn(),
-
   sendWhatsAppTextMessage: vi.fn(),
-
   claimWhatsAppMessage: vi.fn(),
   markWhatsAppMessageProcessed: vi.fn(),
   markWhatsAppMessageFailed: vi.fn(),
@@ -38,12 +48,18 @@ vi.mock("../../src/common/logging/logger.js", () => ({
 }));
 
 vi.mock("../../src/modules/employees/employee.service.js", () => ({
-  findEmployeeByWhatsAppIdentity:
-    mockServices.findEmployeeByWhatsAppIdentity,
+  findEmployeeByWhatsAppNumber:
+    mockServices.findEmployeeByWhatsAppNumber,
 }));
 
-vi.mock("../../src/modules/unknown-contacts/unknown-contact.service.js", () => ({
-  trackUnknownContact: mockServices.trackUnknownContact,
+vi.mock("../../src/modules/employees/employee.model.js", () => ({
+  EmployeeModel: {
+    updateOne: mockServices.updateEmployee,
+  },
+}));
+
+vi.mock("../../src/modules/locations/location.service.js", () => ({
+  validateOfficeLocation: mockServices.validateOfficeLocation,
 }));
 
 vi.mock("../../src/modules/attendance/attendance.service.js", () => ({
@@ -55,14 +71,18 @@ vi.mock("../../src/modules/integrations/whatsapp/whatsapp.client.js", () => ({
   sendWhatsAppTextMessage: mockServices.sendWhatsAppTextMessage,
 }));
 
-vi.mock("../../src/modules/integrations/whatsapp/whatsapp-message.service.js", () => ({
-  claimWhatsAppMessage: mockServices.claimWhatsAppMessage,
-  markWhatsAppMessageProcessed:
-    mockServices.markWhatsAppMessageProcessed,
-  markWhatsAppMessageFailed:
-    mockServices.markWhatsAppMessageFailed,
-}));
+vi.mock(
+  "../../src/modules/integrations/whatsapp/whatsapp-message.service.js",
+  () => ({
+    claimWhatsAppMessage: mockServices.claimWhatsAppMessage,
+    markWhatsAppMessageProcessed:
+      mockServices.markWhatsAppMessageProcessed,
+    markWhatsAppMessageFailed:
+      mockServices.markWhatsAppMessageFailed,
+  }),
+);
 
+import { AppError } from "../../src/common/errors/app-error.js";
 import { whatsappWebhookRouter } from "../../src/modules/integrations/whatsapp/whatsapp.webhook.js";
 
 const app = express();
@@ -77,7 +97,9 @@ function createSignature(body: string): string {
     .digest("hex")}`;
 }
 
-function createIncomingMessageBody(messageText = "Check in"): string {
+function createMessageBody(
+  message: Record<string, unknown>,
+): string {
   return JSON.stringify({
     object: "whatsapp_business_account",
     entry: [
@@ -86,17 +108,7 @@ function createIncomingMessageBody(messageText = "Check in"): string {
           {
             field: "messages",
             value: {
-              messages: [
-                {
-                  from: "8801712345678",
-                  id: "wamid.test123",
-                  timestamp: "1763300000",
-                  type: "text",
-                  text: {
-                    body: messageText,
-                  },
-                },
-              ],
+              messages: [message],
             },
           },
         ],
@@ -105,61 +117,42 @@ function createIncomingMessageBody(messageText = "Check in"): string {
   });
 }
 
-function createBsuidOnlyMessageBody(): string {
-  return JSON.stringify({
-    object: "whatsapp_business_account",
-    entry: [
-      {
-        changes: [
-          {
-            field: "messages",
-            value: {
-              messages: [
-                {
-                  from_user_id: "bsuid.test123",
-                  id: "wamid.bsuid123",
-                  timestamp: "1763300000",
-                  type: "text",
-                  text: {
-                    body: "Check in",
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      },
-    ],
+function createTextMessage(
+  text: string,
+  id = "wamid.test123",
+): string {
+  return createMessageBody({
+    from: "8801712345678",
+    id,
+    timestamp: "1763300000",
+    type: "text",
+    text: { body: text },
   });
 }
 
-function createCombinedIdentityMessageBody(): string {
-  return JSON.stringify({
-    object: "whatsapp_business_account",
-    entry: [
-      {
-        changes: [
-          {
-            field: "messages",
-            value: {
-              messages: [
-                {
-                  from: "8801712345678",
-                  from_user_id: "bsuid.test123",
-                  id: "wamid.combined123",
-                  timestamp: "1763300000",
-                  type: "text",
-                  text: {
-                    body: "Check in",
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      },
-    ],
+function createLocationMessage(
+  id = "wamid.location123",
+  latitude = 23.8103,
+  longitude = 90.4125,
+): string {
+  return createMessageBody({
+    from: "8801712345678",
+    id,
+    timestamp: "1763300000",
+    type: "location",
+    location: {
+      latitude,
+      longitude,
+    },
   });
+}
+
+async function postWebhook(rawBody: string) {
+  return request(app)
+    .post("/")
+    .set("Content-Type", "application/json")
+    .set("X-Hub-Signature-256", createSignature(rawBody))
+    .send(rawBody);
 }
 
 describe("WhatsApp webhook", () => {
@@ -169,13 +162,38 @@ describe("WhatsApp webhook", () => {
     mockEnv.WHATSAPP_VERIFY_TOKEN = "test-verify-token";
     mockEnv.WHATSAPP_APP_SECRET = "test-app-secret";
 
-    mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-      status: "not_found",
-    });
+    mockServices.employee.isActive = true;
+    mockServices.employee.pendingAttendanceAction = undefined;
+    mockServices.employee.pendingAttendanceLocation = undefined;
+    mockServices.lookupStatus = "active";
 
-    mockServices.trackUnknownContact.mockResolvedValue({
-      status: "tracked",
-      attemptCount: 1,
+    mockServices.findEmployeeByWhatsAppNumber.mockImplementation(
+      async () => ({
+        status: mockServices.lookupStatus,
+        ...(mockServices.lookupStatus !== "not_found"
+          ? { employee: mockServices.employee }
+          : {}),
+      }),
+    );
+
+    mockServices.updateEmployee.mockImplementation(
+      async (_filter, update) => {
+        if (update.$set) {
+          Object.assign(mockServices.employee, update.$set);
+        }
+
+        if (update.$unset) {
+          for (const key of Object.keys(update.$unset)) {
+            delete (mockServices.employee as Record<string, unknown>)[key];
+          }
+        }
+
+        return { acknowledged: true };
+      },
+    );
+
+    mockServices.validateOfficeLocation.mockReturnValue({
+      distanceMeters: 25,
     });
 
     mockServices.claimWhatsAppMessage.mockResolvedValue({
@@ -228,7 +246,7 @@ describe("WhatsApp webhook", () => {
       expect(response.status).toBe(403);
     });
 
-    it("returns 503 when the verification token is not configured", async () => {
+    it("returns 503 when the verification token is missing", async () => {
       mockEnv.WHATSAPP_VERIFY_TOKEN = undefined;
 
       const response = await request(app)
@@ -244,17 +262,13 @@ describe("WhatsApp webhook", () => {
   });
 
   describe("POST notifications", () => {
-    it("accepts a valid WhatsApp webhook signature", async () => {
+    it("accepts a valid webhook signature", async () => {
       const rawBody = JSON.stringify({
         object: "whatsapp_business_account",
         entry: [],
       });
 
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(rawBody);
 
       expect(response.status).toBe(200);
     });
@@ -275,20 +289,15 @@ describe("WhatsApp webhook", () => {
     });
 
     it("rejects a missing signature", async () => {
-      const rawBody = JSON.stringify({
-        object: "whatsapp_business_account",
-        entry: [],
-      });
-
       const response = await request(app)
         .post("/")
         .set("Content-Type", "application/json")
-        .send(rawBody);
+        .send('{"object":"whatsapp_business_account","entry":[]}');
 
       expect(response.status).toBe(401);
     });
 
-    it("returns 503 when the app secret is not configured", async () => {
+    it("returns 503 when the app secret is missing", async () => {
       mockEnv.WHATSAPP_APP_SECRET = undefined;
 
       const response = await request(app)
@@ -299,532 +308,308 @@ describe("WhatsApp webhook", () => {
       expect(response.status).toBe(503);
     });
 
-    it("rejects malformed JSON with a valid signature", async () => {
+    it("rejects malformed JSON", async () => {
       const rawBody = '{"object":';
 
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(rawBody);
 
       expect(response.status).toBe(400);
     });
 
     it("rejects an invalid WhatsApp payload", async () => {
-      const rawBody = JSON.stringify({
-        object: "invalid_object",
-      });
+      const rawBody = JSON.stringify({ object: "invalid_object" });
 
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(rawBody);
 
       expect(response.status).toBe(400);
     });
+  });
 
-    it("parses incoming messages after verifying the signature", async () => {
-      const rawBody = createIncomingMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+  describe("employee messages", () => {
+    it("asks for location after IN without recording attendance", async () => {
+      const response = await postWebhook(createTextMessage("IN"));
 
       expect(response.status).toBe(200);
 
-      expect(logger.info).toHaveBeenCalledWith(
-        { messageCount: 1 },
-        "Verified WhatsApp webhook received.",
+      expect(mockServices.updateEmployee).toHaveBeenCalledWith(
+        { _id: "employee-id-123" },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            pendingAttendanceAction: "check_in",
+          }),
+        }),
       );
-    });
-
-    it("tracks an unknown contact using the phone number", async () => {
-      const rawBody = createIncomingMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(
-        mockServices.findEmployeeByWhatsAppIdentity,
-      ).toHaveBeenCalledWith({
-        phoneNumber: "8801712345678",
-      });
-
-      expect(
-        mockServices.trackUnknownContact,
-      ).toHaveBeenCalledWith(
-        "8801712345678",
-        "wamid.test123",
-      );
-    });
-
-    it("tracks a BSUID-only unknown contact", async () => {
-      const rawBody = createBsuidOnlyMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(
-        mockServices.findEmployeeByWhatsAppIdentity,
-      ).toHaveBeenCalledWith({
-        bsuid: "bsuid.test123",
-      });
-
-      expect(
-        mockServices.trackUnknownContact,
-      ).toHaveBeenCalledWith(
-        { bsuid: "bsuid.test123" },
-        "wamid.bsuid123",
-      );
-    });
-
-    it("uses BSUID when both phone number and BSUID are available", async () => {
-      const rawBody = createCombinedIdentityMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(
-        mockServices.findEmployeeByWhatsAppIdentity,
-      ).toHaveBeenCalledWith({
-        phoneNumber: "8801712345678",
-        bsuid: "bsuid.test123",
-      });
-
-      expect(
-        mockServices.trackUnknownContact,
-      ).toHaveBeenCalledWith(
-        { bsuid: "bsuid.test123" },
-        "wamid.combined123",
-      );
-    });
-
-    it("does not track a mismatched identity as an unknown contact", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "identity_mismatch",
-      });
-
-      const rawBody = createCombinedIdentityMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalled();
-    });
-
-    it("does not track an inactive employee as an unknown contact", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "inactive",
-        employee: {
-          _id: {
-            toString: () => "employee-id-123",
-          },
-          employeeCode: "EMP001",
-          isActive: false,
-        },
-      });
-
-      const rawBody = createIncomingMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
-
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledWith({
-        messageId: "wamid.test123",
-        employeeId: "employee-id-123",
-      });
 
       expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
       expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
 
-      expect(
-        mockServices.markWhatsAppMessageProcessed,
-      ).toHaveBeenCalledOnce();
-
-      expect(
-        mockServices.sendWhatsAppTextMessage,
-      ).toHaveBeenCalledOnce();
+      expect(mockServices.sendWhatsAppTextMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: "8801712345678",
+          body: expect.stringContaining("share your current WhatsApp location"),
+        }),
+      );
     });
 
-    it("does not track an active employee as an unknown contact", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "active",
-        employee: {
-          _id: {
-            toString: () => "employee-id-123",
-          },
-          employeeCode: "EMP001",
-          isActive: true,
-        },
-      });
+    it("records check-in after receiving a valid location", async () => {
+      await postWebhook(createTextMessage("IN"));
 
-      const rawBody = createIncomingMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(
+        createLocationMessage(),
+      );
 
       expect(response.status).toBe(200);
 
-      expect(mockServices.trackUnknownContact).not.toHaveBeenCalled();
-
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledWith({
-        messageId: "wamid.test123",
-        employeeId: "employee-id-123",
+      expect(mockServices.validateOfficeLocation).toHaveBeenCalledWith({
+        latitude: 23.8103,
+        longitude: 90.4125,
       });
 
-      // "Check in" is not a valid parser command. The parser expects "IN".
+      expect(mockServices.checkInEmployee).toHaveBeenCalledWith(
+        "employee-id-123",
+        {
+          location: {
+            latitude: 23.8103,
+            longitude: 90.4125,
+          },
+        },
+      );
+
+      expect(mockServices.updateEmployee).toHaveBeenCalledWith(
+        { _id: "employee-id-123" },
+        {
+          $unset: {
+            pendingAttendanceAction: 1,
+            pendingAttendanceAt: 1,
+            pendingAttendanceLocation: 1,
+          },
+        },
+      );
+    });
+
+    it("asks for a reason when check-in is late", async () => {
+      mockServices.checkInEmployee
+        .mockRejectedValueOnce(
+          new AppError(
+            "A reason is required for late check-in.",
+            400,
+            "LATE_REASON_REQUIRED",
+          ),
+        )
+        .mockResolvedValueOnce({
+          timeZone: "Asia/Dhaka",
+          checkInAt: new Date("2026-11-18T10:30:00+06:00"),
+          status: "late",
+        });
+
+      await postWebhook(createTextMessage("IN"));
+
+      const locationResponse = await postWebhook(
+        createLocationMessage(),
+      );
+
+      expect(locationResponse.status).toBe(200);
+
+      expect(mockServices.employee.pendingAttendanceLocation).toEqual({
+        latitude: 23.8103,
+        longitude: 90.4125,
+      });
+
+      expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
+
+      const reasonResponse = await postWebhook(
+        createTextMessage("Traffic jam", "wamid.reason123"),
+      );
+
+      expect(reasonResponse.status).toBe(200);
+
+      expect(mockServices.checkInEmployee).toHaveBeenLastCalledWith(
+        "employee-id-123",
+        {
+          location: {
+            latitude: 23.8103,
+            longitude: 90.4125,
+          },
+          reason: "Traffic jam",
+        },
+      );
+    });
+
+    it("asks for location after OUT without recording checkout", async () => {
+      const response = await postWebhook(createTextMessage("OUT"));
+
+      expect(response.status).toBe(200);
+
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+
+      expect(mockServices.employee.pendingAttendanceAction).toBe(
+        "check_out",
+      );
+    });
+
+    it("records checkout after receiving a valid location", async () => {
+      await postWebhook(createTextMessage("OUT"));
+
+      const response = await postWebhook(
+        createLocationMessage(),
+      );
+
+      expect(response.status).toBe(200);
+
+      expect(mockServices.checkOutEmployee).toHaveBeenCalledWith(
+        "employee-id-123",
+        {
+          location: {
+            latitude: 23.8103,
+            longitude: 90.4125,
+          },
+        },
+      );
+    });
+
+    it("asks for a note when checkout requires one", async () => {
+      mockServices.checkOutEmployee
+        .mockRejectedValueOnce(
+          new AppError(
+            "A note is required for late checkout.",
+            400,
+            "CHECKOUT_NOTE_REQUIRED",
+          ),
+        )
+        .mockResolvedValueOnce({
+          timeZone: "Asia/Dhaka",
+          checkOutAt: new Date("2026-11-18T20:00:00+06:00"),
+          checkOutStatus: "normal",
+        });
+
+      await postWebhook(createTextMessage("OUT"));
+
+      await postWebhook(createLocationMessage());
+
+      expect(mockServices.employee.pendingAttendanceLocation).toEqual({
+        latitude: 23.8103,
+        longitude: 90.4125,
+      });
+
+      await postWebhook(
+        createTextMessage("Personal work", "wamid.note123"),
+      );
+
+      expect(mockServices.checkOutEmployee).toHaveBeenLastCalledWith(
+        "employee-id-123",
+        {
+          location: {
+            latitude: 23.8103,
+            longitude: 90.4125,
+          },
+          note: "Personal work",
+        },
+      );
+    });
+
+    it("rejects a location outside the office radius", async () => {
+      mockServices.validateOfficeLocation.mockImplementation(() => {
+        throw new AppError(
+          "You are outside the permitted office location.",
+          400,
+          "OUTSIDE_OFFICE_RADIUS",
+        );
+      });
+
+      await postWebhook(createTextMessage("IN"));
+
+      const response = await postWebhook(
+        createLocationMessage(),
+      );
+
+      expect(response.status).toBe(200);
+
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown WhatsApp number", async () => {
+      mockServices.lookupStatus = "not_found";
+
+      const response = await postWebhook(
+        createTextMessage("IN"),
+      );
+
+      expect(response.status).toBe(200);
+
       expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
       expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
 
-      expect(
-        mockServices.markWhatsAppMessageProcessed,
-      ).toHaveBeenCalledOnce();
-
-      expect(
-        mockServices.sendWhatsAppTextMessage,
-      ).toHaveBeenCalledOnce();
+      expect(mockServices.sendWhatsAppTextMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.stringContaining("not registered"),
+        }),
+      );
     });
 
+    it("rejects an inactive employee", async () => {
+      mockServices.lookupStatus = "inactive";
+      mockServices.employee.isActive = false;
 
-it("checks in an active employee using the IN command", async () => {
-  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-    status: "active",
-    employee: {
-      _id: {
-        toString: () => "employee-id-123",
-      },
-      employeeCode: "EMP001",
-      isActive: true,
-    },
-  });
+      const response = await postWebhook(
+        createTextMessage("IN"),
+      );
 
-  const rawBody = createIncomingMessageBody("IN");
+      expect(response.status).toBe(200);
 
-  const response = await request(app)
-    .post("/")
-    .set("Content-Type", "application/json")
-    .set("X-Hub-Signature-256", createSignature(rawBody))
-    .send(rawBody);
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+    });
 
-  expect(response.status).toBe(200);
+    it("responds to HELP", async () => {
+      const response = await postWebhook(
+        createTextMessage("HELP"),
+      );
 
-  expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
-  expect(mockServices.checkInEmployee).toHaveBeenCalledWith(
-    "employee-id-123",
-    {},
-  );
+      expect(response.status).toBe(200);
 
-  expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
+      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
 
-  expect(
-    mockServices.markWhatsAppMessageProcessed,
-  ).toHaveBeenCalledOnce();
+      expect(mockServices.sendWhatsAppTextMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.stringContaining("Send IN to check in."),
+        }),
+      );
+    });
 
-  expect(
-    mockServices.sendWhatsAppTextMessage,
-  ).toHaveBeenCalledOnce();
-});
-
-it("checks in an active employee with a reason", async () => {
-  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-    status: "active",
-    employee: {
-      _id: {
-        toString: () => "employee-id-123",
-      },
-      employeeCode: "EMP001",
-      isActive: true,
-    },
-  });
-
-  const rawBody = createIncomingMessageBody(
-    "IN reason: Traffic jam",
-  );
-
-  const response = await request(app)
-    .post("/")
-    .set("Content-Type", "application/json")
-    .set("X-Hub-Signature-256", createSignature(rawBody))
-    .send(rawBody);
-
-  expect(response.status).toBe(200);
-
-  expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
-  expect(mockServices.checkInEmployee).toHaveBeenCalledWith(
-    "employee-id-123",
-    { reason: "Traffic jam" },
-  );
-
-  expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
-  expect(
-    mockServices.markWhatsAppMessageProcessed,
-  ).toHaveBeenCalledOnce();
-});
-
-it("checks out an active employee using the OUT command", async () => {
-  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-    status: "active",
-    employee: {
-      _id: {
-        toString: () => "employee-id-123",
-      },
-      employeeCode: "EMP001",
-      isActive: true,
-    },
-  });
-
-  const rawBody = createIncomingMessageBody("OUT");
-
-  const response = await request(app)
-    .post("/")
-    .set("Content-Type", "application/json")
-    .set("X-Hub-Signature-256", createSignature(rawBody))
-    .send(rawBody);
-
-  expect(response.status).toBe(200);
-
-  expect(mockServices.checkOutEmployee).toHaveBeenCalledOnce();
-  expect(mockServices.checkOutEmployee).toHaveBeenCalledWith(
-    "employee-id-123",
-    {},
-  );
-
-  expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
-
-  expect(
-    mockServices.markWhatsAppMessageProcessed,
-  ).toHaveBeenCalledOnce();
-
-  expect(
-    mockServices.sendWhatsAppTextMessage,
-  ).toHaveBeenCalledOnce();
-});
-
-it("checks out an active employee with a note", async () => {
-  mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-    status: "active",
-    employee: {
-      _id: {
-        toString: () => "employee-id-123",
-      },
-      employeeCode: "EMP001",
-      isActive: true,
-    },
-  });
-
-  const rawBody = createIncomingMessageBody(
-    "OUT note: Personal work",
-  );
-
-  const response = await request(app)
-    .post("/")
-    .set("Content-Type", "application/json")
-    .set("X-Hub-Signature-256", createSignature(rawBody))
-    .send(rawBody);
-
-  expect(response.status).toBe(200);
-
-  expect(mockServices.checkOutEmployee).toHaveBeenCalledOnce();
-  expect(mockServices.checkOutEmployee).toHaveBeenCalledWith(
-    "employee-id-123",
-    { note: "Personal work" },
-  );
-
-  expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
-
-  expect(
-    mockServices.markWhatsAppMessageProcessed,
-  ).toHaveBeenCalledOnce();
-});
-
-
-    it("ignores an already processed WhatsApp message", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "active",
-        employee: {
-          _id: {
-            toString: () => "employee-id-123",
-          },
-          employeeCode: "EMP001",
-          isActive: true,
-        },
-      });
-
+    it("ignores duplicate messages", async () => {
       mockServices.claimWhatsAppMessage.mockResolvedValue({
         status: "duplicate",
       });
 
-      const rawBody = createIncomingMessageBody("IN");
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(
+        createTextMessage("IN"),
+      );
 
       expect(response.status).toBe(200);
 
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
-
+      expect(mockServices.updateEmployee).not.toHaveBeenCalled();
       expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
-      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
-
-      expect(
-        mockServices.markWhatsAppMessageProcessed,
-      ).not.toHaveBeenCalled();
-
-      expect(
-        mockServices.sendWhatsAppTextMessage,
-      ).not.toHaveBeenCalled();
+      expect(mockServices.sendWhatsAppTextMessage).not.toHaveBeenCalled();
     });
 
-    it("ignores a WhatsApp message that is currently being processed", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "active",
-        employee: {
-          _id: {
-            toString: () => "employee-id-123",
-          },
-          employeeCode: "EMP001",
-          isActive: true,
-        },
-      });
-
-      mockServices.claimWhatsAppMessage.mockResolvedValue({
-        status: "in_progress",
-      });
-
-      const rawBody = createIncomingMessageBody("IN");
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(mockServices.claimWhatsAppMessage).toHaveBeenCalledOnce();
-
-      expect(mockServices.checkInEmployee).not.toHaveBeenCalled();
-      expect(mockServices.checkOutEmployee).not.toHaveBeenCalled();
-
-      expect(
-        mockServices.markWhatsAppMessageProcessed,
-      ).not.toHaveBeenCalled();
-
-      expect(
-        mockServices.sendWhatsAppTextMessage,
-      ).not.toHaveBeenCalled();
-    });
-
-
-    it("marks an unexpected attendance error as failed and returns 500", async () => {
-      mockServices.findEmployeeByWhatsAppIdentity.mockResolvedValue({
-        status: "active",
-        employee: {
-          _id: {
-            toString: () => "employee-id-123",
-          },
-          employeeCode: "EMP001",
-          isActive: true,
-        },
-      });
-
+    it("marks unexpected processing errors as failed", async () => {
       const processingError = new Error("Database unavailable");
 
-      mockServices.checkInEmployee.mockRejectedValue(processingError);
+      mockServices.updateEmployee.mockRejectedValueOnce(processingError);
 
-      const rawBody = createIncomingMessageBody("IN");
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
+      const response = await postWebhook(
+        createTextMessage("IN"),
+      );
 
       expect(response.status).toBe(500);
 
-      expect(mockServices.checkInEmployee).toHaveBeenCalledOnce();
-
-      expect(
-        mockServices.markWhatsAppMessageFailed,
-      ).toHaveBeenCalledOnce();
-
-      expect(
-        mockServices.markWhatsAppMessageFailed,
-      ).toHaveBeenCalledWith(
+      expect(mockServices.markWhatsAppMessageFailed).toHaveBeenCalledWith(
         "wamid.test123",
         "test-lease-token",
         processingError,
       );
-
-      expect(
-        mockServices.markWhatsAppMessageProcessed,
-      ).not.toHaveBeenCalled();
-
-      expect(
-        mockServices.sendWhatsAppTextMessage,
-      ).not.toHaveBeenCalled();
-    });
-
-
-
-
-    it("acknowledges duplicate unknown-contact messages", async () => {
-      mockServices.trackUnknownContact.mockResolvedValue({
-        status: "duplicate",
-      });
-
-      const rawBody = createIncomingMessageBody();
-
-      const response = await request(app)
-        .post("/")
-        .set("Content-Type", "application/json")
-        .set("X-Hub-Signature-256", createSignature(rawBody))
-        .send(rawBody);
-
-      expect(response.status).toBe(200);
-
-      expect(
-        mockServices.trackUnknownContact,
-      ).toHaveBeenCalledOnce();
     });
   });
 });

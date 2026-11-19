@@ -7,6 +7,22 @@ import {
   CHECK_OUT_STATUSES,
 } from "./attendance.types";
 
+const locationSchema = new Schema(
+  {
+    latitude: {
+      type: Number,
+      required: true,
+    },
+    longitude: {
+      type: Number,
+      required: true,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
 const attendanceSchema = new Schema<AttendanceRecord>(
   {
     employee: {
@@ -16,7 +32,6 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       index: true,
     },
 
-    // Bangladesh-local calendar date, formatted as YYYY-MM-DD.
     date: {
       type: String,
       required: true,
@@ -35,9 +50,7 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       required: true,
     },
 
-    checkInAt: {
-      type: Date,
-    },
+    checkInAt: Date,
 
     checkInStatus: {
       type: String,
@@ -50,9 +63,11 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       maxlength: 500,
     },
 
-    checkOutAt: {
-      type: Date,
+    checkInLocation: {
+      type: locationSchema,
     },
+
+    checkOutAt: Date,
 
     checkOutStatus: {
       type: String,
@@ -63,6 +78,10 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       type: String,
       trim: true,
       maxlength: 500,
+    },
+
+    checkOutLocation: {
+      type: locationSchema,
     },
 
     isAutoCheckout: {
@@ -83,28 +102,25 @@ const attendanceSchema = new Schema<AttendanceRecord>(
       maxlength: 500,
     },
 
-    reviewedAt: {
-      type: Date,
-    },
+    reviewedAt: Date,
 
     reviewedBy: {
       type: Schema.Types.ObjectId,
       ref: "Admin",
     },
 
-correctionReason: {
-  type: String,
-  trim: true,
-  maxlength: 500,
-},
-correctedAt: {
-  type: Date,
-},
-correctedBy: {
-  type: Schema.Types.ObjectId,
-  ref: "Admin",
-},
+    correctionReason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+    },
 
+    correctedAt: Date,
+
+    correctedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "Admin",
+    },
   },
   {
     timestamps: true,
@@ -113,13 +129,11 @@ correctedBy: {
   },
 );
 
-// One attendance record per employee per local calendar day.
 attendanceSchema.index(
   { employee: 1, date: 1 },
   { unique: true },
 );
 
-// Useful for manager dashboard date/status filters.
 attendanceSchema.index({ date: 1, status: 1 });
 attendanceSchema.index({ needsReview: 1, date: 1 });
 

@@ -138,11 +138,11 @@ export const listWhatsAppEnrollmentsController: RequestHandler = async (
     }
 
     const result = await listWhatsAppEnrollments({
-      page,
-      limit,
-      search,
-      status,
-    });
+  page,
+  limit,
+  ...(search !== undefined ? { search } : {}),
+  ...(status !== undefined ? { status } : {}),
+});
 
     res.status(200).json({
       message: "WhatsApp enrollments retrieved successfully.",

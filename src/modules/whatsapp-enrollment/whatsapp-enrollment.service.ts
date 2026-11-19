@@ -1,12 +1,20 @@
+
 import { createHash, randomBytes } from "node:crypto";
+import { Types } from "mongoose";
 
 import { AppError } from "../../common/errors/app-error.js";
 import { EmployeeModel } from "../employees/employee.model.js";
-import { WhatsAppEnrollmentModel } from "./whatsapp-enrollment.model.js";
+import {
+  WHATSAPP_ENROLLMENT_STATUSES,
+  WhatsAppEnrollmentModel,
+} from "./whatsapp-enrollment.model.js";
 
 const ENROLLMENT_TOKEN_EXPIRY_MINUTES = 15;
 const MAX_VERIFICATION_ATTEMPTS = 5;
 const CONSENT_VERSION = "1.0";
+
+type EnrollmentStatus =
+  (typeof WHATSAPP_ENROLLMENT_STATUSES)[number];
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -25,10 +33,22 @@ function isDuplicateKeyError(error: unknown): boolean {
   );
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Creates or reissues an enrollment invitation.
+ * Only the hashed token is stored in the database.
+ */
 export async function createWhatsAppEnrollment(
   employeeId: string,
   now = new Date(),
 ) {
+  if (!Types.ObjectId.isValid(employeeId)) {
+    throw new AppError("Invalid employee ID.", 400);
+  }
+
   const employee = await EmployeeModel.findById(employeeId);
 
   if (!employee || !employee.isActive) {
@@ -75,6 +95,187 @@ export async function createWhatsAppEnrollment(
   };
 }
 
+/**
+ * Lists enrollments with pagination, status filtering and employee search.
+ */
+export async function listWhatsAppEnrollments(input: {
+  page: number;
+  limit: number;
+  search?: string;
+  status?: EnrollmentStatus;
+}) {
+  const now = new Date();
+
+  await WhatsAppEnrollmentModel.updateMany(
+    {
+      status: "pending",
+      expiresAt: { $lte: now },
+    },
+    {
+      $set: { status: "expired" },
+    },
+  );
+
+  const filter: Record<string, unknown> = {};
+
+  if (input.status) {
+    filter.status = input.status;
+  }
+
+  const search = input.search?.trim();
+
+  if (search) {
+    const regex = new RegExp(escapeRegex(search), "i");
+
+    const matchingEmployees = await EmployeeModel.find({
+      $or: [
+        { fullName: regex },
+        { employeeCode: regex },
+        { phoneNumber: regex },
+      ],
+    }).select("_id");
+
+    const employeeIds = matchingEmployees.map(
+      (employee) => employee._id,
+    );
+
+    if (employeeIds.length === 0) {
+      return {
+        enrollments: [],
+        pagination: {
+          page: input.page,
+          limit: input.limit,
+          total: 0,
+          totalPages: 0,
+        },
+      };
+    }
+
+    filter.employeeId = { $in: employeeIds };
+  }
+
+  const skip = (input.page - 1) * input.limit;
+
+  const [enrollments, total] = await Promise.all([
+    WhatsAppEnrollmentModel.find(filter)
+      .select(
+        [
+          "_id",
+          "employeeId",
+          "status",
+          "expiresAt",
+          "attemptCount",
+          "verifiedAt",
+          "verifiedPhoneNumber",
+          "consentedAt",
+          "consentVersion",
+          "revokedAt",
+          "createdAt",
+          "updatedAt",
+        ].join(" "),
+      )
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(input.limit),
+
+    WhatsAppEnrollmentModel.countDocuments(filter),
+  ]);
+
+  const employeeIds = enrollments.map(
+    (enrollment) => enrollment.employeeId,
+  );
+
+  const employees = await EmployeeModel.find({
+    _id: { $in: employeeIds },
+  }).select(
+    "_id employeeCode fullName phoneNumber employmentType department isActive",
+  );
+
+  const employeeMap = new Map(
+    employees.map((employee) => [
+      employee._id.toString(),
+      employee,
+    ]),
+  );
+
+  return {
+    enrollments: enrollments.map((enrollment) => ({
+      id: enrollment._id.toString(),
+      employeeId: enrollment.employeeId.toString(),
+      status: enrollment.status,
+      expiresAt: enrollment.expiresAt,
+      attemptCount: enrollment.attemptCount,
+      verifiedAt: enrollment.verifiedAt,
+      verifiedPhoneNumber: enrollment.verifiedPhoneNumber,
+      consentedAt: enrollment.consentedAt,
+      consentVersion: enrollment.consentVersion,
+      revokedAt: enrollment.revokedAt,
+      createdAt: enrollment.createdAt,
+      updatedAt: enrollment.updatedAt,
+      employee:
+        employeeMap.get(enrollment.employeeId.toString()) ?? null,
+    })),
+    pagination: {
+      page: input.page,
+      limit: input.limit,
+      total,
+      totalPages: Math.ceil(total / input.limit),
+    },
+  };
+}
+
+/**
+ * Retrieves enrollment details for one employee.
+ */
+export async function getWhatsAppEnrollmentByEmployeeId(
+  employeeId: string,
+) {
+  if (!Types.ObjectId.isValid(employeeId)) {
+    throw new AppError("Invalid employee ID.", 400);
+  }
+
+  const enrollment = await WhatsAppEnrollmentModel.findOne({
+    employeeId,
+  }).select(
+    [
+      "_id",
+      "employeeId",
+      "status",
+      "expiresAt",
+      "attemptCount",
+      "verifiedAt",
+      "verifiedPhoneNumber",
+      "consentedAt",
+      "consentVersion",
+      "revokedAt",
+      "createdAt",
+      "updatedAt",
+    ].join(" "),
+  );
+
+  if (!enrollment) {
+    throw new AppError(
+      "WhatsApp enrollment not found.",
+      404,
+      "ENROLLMENT_NOT_FOUND",
+    );
+  }
+
+  const employee = await EmployeeModel.findById(
+    enrollment.employeeId,
+  ).select(
+    "_id employeeCode fullName phoneNumber employmentType department isActive",
+  );
+
+  return {
+    enrollment,
+    employee,
+  };
+}
+
+/**
+ * Verifies the token and the sender's registered phone number.
+ */
 export async function verifyWhatsAppEnrollmentToken(
   input: {
     token: string;
@@ -253,10 +454,6 @@ export async function verifyWhatsAppEnrollmentToken(
 
 /**
  * Finds a verified enrollment belonging to the sender.
- *
- * The sender's phone number is the primary verification identity.
- * If a BSUID was recorded during token verification, a different
- * BSUID is rejected.
  */
 export async function findVerifiedWhatsAppEnrollmentForSender(
   input: {
@@ -384,10 +581,7 @@ export async function acceptWhatsAppEnrollmentConsent(
     throw new AppError("Active employee not found.", 404);
   }
 
-  // Prefer the BSUID captured during verification. If Meta did not
-  // provide one then, use the identity from the consent message.
-  const bsuidToLink =
-    enrollment.verifiedBsuid || incomingBsuid;
+  const bsuidToLink = enrollment.verifiedBsuid || incomingBsuid;
 
   let newlyLinkedBsuid = false;
 
@@ -460,6 +654,9 @@ export async function acceptWhatsAppEnrollmentConsent(
           status: "enrolled",
           consentedAt: now,
           consentVersion: CONSENT_VERSION,
+          ...(bsuidToLink
+            ? { verifiedBsuid: bsuidToLink }
+            : {}),
         },
       },
       {
@@ -469,8 +666,6 @@ export async function acceptWhatsAppEnrollmentConsent(
     );
 
   if (!updatedEnrollment) {
-    // If this request linked a new BSUID but lost the enrollment
-    // state transition, undo only the link created by this request.
     if (newlyLinkedBsuid && bsuidToLink) {
       await EmployeeModel.updateOne(
         {
@@ -494,29 +689,90 @@ export async function acceptWhatsAppEnrollmentConsent(
   return updatedEnrollment;
 }
 
+/**
+ * Revokes an enrollment and unlinks its recorded WhatsApp identity.
+ *
+ * Revocation is retryable: if unlinking the employee identity fails,
+ * a later revocation request can retry the cleanup.
+ */
 export async function revokeWhatsAppEnrollment(
   employeeId: string,
   now = new Date(),
 ) {
-  const enrollment = await WhatsAppEnrollmentModel.findOneAndUpdate(
-    {
-      employeeId,
-      status: { $in: ["pending", "verified", "enrolled"] },
-    },
-    {
-      $set: {
-        status: "revoked",
-        revokedAt: now,
-      },
-    },
-    {
-      returnDocument: "after",
-      runValidators: true,
-    },
-  );
+  if (!Types.ObjectId.isValid(employeeId)) {
+    throw new AppError("Invalid employee ID.", 400);
+  }
 
-  if (!enrollment) {
+  const existingEnrollment =
+    await WhatsAppEnrollmentModel.findOne({
+      employeeId,
+    });
+
+  if (
+    !existingEnrollment ||
+    !["pending", "verified", "enrolled", "revoked"].includes(
+      existingEnrollment.status,
+    )
+  ) {
     throw new AppError("Active enrollment not found.", 404);
+  }
+
+  let enrollment = existingEnrollment;
+
+  if (existingEnrollment.status !== "revoked") {
+    const revokedEnrollment =
+      await WhatsAppEnrollmentModel.findOneAndUpdate(
+        {
+          _id: existingEnrollment._id,
+          status: { $in: ["pending", "verified", "enrolled"] },
+        },
+        {
+          $set: {
+            status: "revoked",
+            revokedAt: now,
+          },
+        },
+        {
+          returnDocument: "after",
+          runValidators: true,
+        },
+      );
+
+    if (revokedEnrollment) {
+      enrollment = revokedEnrollment;
+    } else {
+      // Another request may have revoked it concurrently.
+      const latestEnrollment =
+        await WhatsAppEnrollmentModel.findOne({
+          _id: existingEnrollment._id,
+          status: "revoked",
+        });
+
+      if (!latestEnrollment) {
+        throw new AppError(
+          "Enrollment could not be revoked. Please try again.",
+          409,
+        );
+      }
+
+      enrollment = latestEnrollment;
+    }
+  }
+
+  // Only unlink the identity recorded against this enrollment.
+  // Keeping verifiedBsuid on the revoked record makes cleanup retryable.
+  if (enrollment.verifiedBsuid) {
+    await EmployeeModel.updateOne(
+      {
+        _id: enrollment.employeeId,
+        whatsappBusinessScopedUserId: enrollment.verifiedBsuid,
+      },
+      {
+        $unset: {
+          whatsappBusinessScopedUserId: 1,
+        },
+      },
+    );
   }
 
   return enrollment;
