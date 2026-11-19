@@ -1,8 +1,14 @@
+
 import type { RequestHandler } from "express";
 import { Types } from "mongoose";
-import { linkUnknownContactToEmployee } from "./unknown-contact.service.js";
+
 import { AppError } from "../../common/errors/app-error.js";
 import { UnknownContactModel } from "./unknown-contact.model.js";
+import {
+  linkUnknownContactToEmployee,
+  releaseUnknownContactRestriction,
+  restrictUnknownContact,
+} from "./unknown-contact.service.js";
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -14,15 +20,15 @@ export const listUnknownContactsController: RequestHandler = async (
   next,
 ) => {
   try {
-    const pageValue = Number(req.query.page ?? 1);
-    const limitValue = Number(req.query.limit ?? 20);
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 20);
 
     if (
-      !Number.isInteger(pageValue) ||
-      pageValue < 1 ||
-      !Number.isInteger(limitValue) ||
-      limitValue < 1 ||
-      limitValue > 100
+      !Number.isInteger(page) ||
+      page < 1 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
     ) {
       throw new AppError(
         "Page must be at least 1 and limit must be between 1 and 100.",
@@ -63,7 +69,7 @@ export const listUnknownContactsController: RequestHandler = async (
         }
       : {};
 
-    const skip = (pageValue - 1) * limitValue;
+    const skip = (page - 1) * limit;
 
     const [contacts, total] = await Promise.all([
       UnknownContactModel.find(filter)
@@ -81,7 +87,7 @@ export const listUnknownContactsController: RequestHandler = async (
         )
         .sort({ lastMessageAt: -1, createdAt: -1 })
         .skip(skip)
-        .limit(limitValue)
+        .limit(limit)
         .lean(),
 
       UnknownContactModel.countDocuments(filter),
@@ -102,10 +108,10 @@ export const listUnknownContactsController: RequestHandler = async (
           updatedAt: contact.updatedAt,
         })),
         pagination: {
-          page: pageValue,
-          limit: limitValue,
+          page,
+          limit,
           total,
-          totalPages: Math.ceil(total / limitValue),
+          totalPages: Math.ceil(total / limit),
         },
       },
     });
@@ -174,7 +180,6 @@ export const getUnknownContactController: RequestHandler = async (
   }
 };
 
-
 export const linkUnknownContactController: RequestHandler = async (
   req,
   res,
@@ -201,11 +206,63 @@ export const linkUnknownContactController: RequestHandler = async (
 
     res.status(200).json({
       message: "Unknown contact linked to employee successfully.",
+      data: { employee },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const restrictUnknownContactController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const contactId = req.params.id as string;
+
+    const contact = await restrictUnknownContact(contactId);
+
+    res.status(200).json({
+      message: "Unknown contact restricted for 24 hours.",
       data: {
-        employee,
+        contact: {
+          id: contact._id.toString(),
+          phoneNumber: contact.phoneNumber,
+          whatsappBusinessScopedUserId:
+            contact.whatsappBusinessScopedUserId,
+          attemptCount: contact.attemptCount,
+          restrictedUntil: contact.restrictedUntil,
+        },
       },
     });
   } catch (error) {
     next(error);
   }
 };
+
+export const releaseUnknownContactRestrictionController: RequestHandler =
+  async (req, res, next) => {
+    try {
+      const contactId = req.params.id as string;
+
+      const contact =
+        await releaseUnknownContactRestriction(contactId);
+
+      res.status(200).json({
+        message: "Unknown contact restriction released successfully.",
+        data: {
+          contact: {
+            id: contact._id.toString(),
+            phoneNumber: contact.phoneNumber,
+            whatsappBusinessScopedUserId:
+              contact.whatsappBusinessScopedUserId,
+            attemptCount: contact.attemptCount,
+            restrictedUntil: contact.restrictedUntil,
+          },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
