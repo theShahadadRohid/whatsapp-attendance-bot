@@ -1,4 +1,6 @@
+
 import { Types } from "mongoose";
+
 import { AppError } from "../../common/errors/app-error.js";
 import { EmployeeModel } from "../employees/employee.model.js";
 import { UnknownContactModel } from "./unknown-contact.model.js";
@@ -24,6 +26,16 @@ function isDuplicateKeyError(error: unknown): boolean {
     "code" in error &&
     error.code === 11000
   );
+}
+
+function validateObjectId(id: string, field: string): void {
+  if (!Types.ObjectId.isValid(id)) {
+    throw new AppError(
+      `Invalid ${field}.`,
+      400,
+      "INVALID_ID",
+    );
+  }
 }
 
 // Backward-compatible phone-number overload.
@@ -92,7 +104,6 @@ export async function trackUnknownContact(
   for (let retry = 0; retry < MAX_UPDATE_RETRIES; retry += 1) {
     const contact = await UnknownContactModel.findOne(identityFilter);
 
-    // First message from this unknown contact.
     if (!contact) {
       try {
         await UnknownContactModel.create({
@@ -108,7 +119,6 @@ export async function trackUnknownContact(
           attemptCount: 1,
         };
       } catch (error) {
-        // Another request may have created this contact first.
         if (isDuplicateKeyError(error)) {
           continue;
         }
@@ -119,12 +129,10 @@ export async function trackUnknownContact(
 
     const processedMessageIds = contact.processedMessageIds ?? [];
 
-    // Ignore duplicate webhook deliveries.
     if (processedMessageIds.includes(messageId)) {
       return { status: "duplicate" };
     }
 
-    // Do not count messages during an active restriction.
     if (
       contact.restrictedUntil &&
       contact.restrictedUntil.getTime() > now.getTime()
@@ -135,7 +143,6 @@ export async function trackUnknownContact(
       };
     }
 
-    // Start a fresh cycle if the restriction has expired.
     const restrictionExpired =
       contact.restrictedUntil !== null &&
       contact.restrictedUntil !== undefined &&
@@ -161,8 +168,6 @@ export async function trackUnknownContact(
         ? new Date(now.getTime() + RESTRICTION_DURATION_MS)
         : null;
 
-    // Compare-and-set: update only if nobody changed this record
-    // since we read it.
     const revision = contact.revision ?? 0;
 
     const updatedContact = await UnknownContactModel.findOneAndUpdate(
@@ -190,7 +195,6 @@ export async function trackUnknownContact(
       },
     );
 
-    // Someone else updated the record. Read the latest state and retry.
     if (!updatedContact) {
       continue;
     }
@@ -213,18 +217,12 @@ export async function trackUnknownContact(
   );
 }
 
-
 export async function linkUnknownContactToEmployee(
   contactId: string,
   employeeId: string,
 ) {
-  if (!Types.ObjectId.isValid(contactId) || !Types.ObjectId.isValid(employeeId)) {
-    throw new AppError(
-      "Invalid contact or employee ID.",
-      400,
-      "INVALID_ID",
-    );
-  }
+  validateObjectId(contactId, "contact ID");
+  validateObjectId(employeeId, "employee ID");
 
   const contact = await UnknownContactModel.findById(contactId);
 
@@ -317,15 +315,11 @@ export async function linkUnknownContactToEmployee(
       employeeCode: employee.employeeCode,
       fullName: employee.fullName,
       phoneNumber: employee.phoneNumber,
-      whatsappBusinessScopedUserId: bsuid ?? employee.whatsappBusinessScopedUserId,
+      whatsappBusinessScopedUserId:
+        bsuid ?? employee.whatsappBusinessScopedUserId,
     };
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === 11000
-    ) {
+    if (isDuplicateKeyError(error)) {
       throw new AppError(
         "This WhatsApp identity is already linked to another employee.",
         409,
@@ -335,4 +329,75 @@ export async function linkUnknownContactToEmployee(
 
     throw error;
   }
+}
+
+export async function restrictUnknownContact(contactId: string) {
+  validateObjectId(contactId, "contact ID");
+
+  const now = new Date();
+  const restrictedUntil = new Date(
+    now.getTime() + RESTRICTION_DURATION_MS,
+  );
+
+  const contact = await UnknownContactModel.findByIdAndUpdate(
+    contactId,
+    {
+      $set: {
+        attemptCount: MAX_ATTEMPTS,
+        restrictedUntil,
+      },
+      $inc: {
+        revision: 1,
+      },
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+    },
+  );
+
+  if (!contact) {
+    throw new AppError(
+      "Unknown contact not found.",
+      404,
+      "UNKNOWN_CONTACT_NOT_FOUND",
+    );
+  }
+
+  return contact;
+}
+
+export async function releaseUnknownContactRestriction(
+  contactId: string,
+) {
+  validateObjectId(contactId, "contact ID");
+
+  const contact = await UnknownContactModel.findByIdAndUpdate(
+    contactId,
+    {
+      $set: {
+        attemptCount: 0,
+      },
+      $unset: {
+        restrictedUntil: 1,
+      },
+      $inc: {
+        revision: 1,
+      },
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+    },
+  );
+
+  if (!contact) {
+    throw new AppError(
+      "Unknown contact not found.",
+      404,
+      "UNKNOWN_CONTACT_NOT_FOUND",
+    );
+  }
+
+  return contact;
 }
