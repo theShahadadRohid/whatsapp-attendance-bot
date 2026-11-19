@@ -1,7 +1,6 @@
-
 import type { RequestHandler } from "express";
 import { Types } from "mongoose";
-
+import { linkUnknownContactToEmployee } from "./unknown-contact.service.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { UnknownContactModel } from "./unknown-contact.model.js";
 
@@ -168,6 +167,42 @@ export const getUnknownContactController: RequestHandler = async (
           createdAt: contact.createdAt,
           updatedAt: contact.updatedAt,
         },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const linkUnknownContactController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const contactId = req.params.id as string;
+    const { employeeId } = req.body as {
+      employeeId?: string;
+    };
+
+    if (!employeeId || !Types.ObjectId.isValid(employeeId)) {
+      throw new AppError(
+        "A valid employeeId is required.",
+        400,
+        "INVALID_EMPLOYEE_ID",
+      );
+    }
+
+    const employee = await linkUnknownContactToEmployee(
+      contactId,
+      employeeId,
+    );
+
+    res.status(200).json({
+      message: "Unknown contact linked to employee successfully.",
+      data: {
+        employee,
       },
     });
   } catch (error) {
