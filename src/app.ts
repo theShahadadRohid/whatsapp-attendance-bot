@@ -1,3 +1,4 @@
+
 import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
@@ -23,6 +24,7 @@ import { scheduleRouter } from "./modules/schedules/schedule.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
 import { whatsappWebhookRouter } from "./modules/integrations/whatsapp/whatsapp.webhook.js";
 import { whatsappEnrollmentRouter } from "./modules/whatsapp-enrollment/whatsapp-enrollment.routes.js";
+import { unknownContactRouter } from "./modules/unknown-contacts/unknown-contact.routes.js";
 
 export const app = express();
 
@@ -88,6 +90,10 @@ app.use(`${API_PREFIX}/attendance`, attendanceRouter);
 app.use(
   `${API_PREFIX}/whatsapp-enrollments`,
   whatsappEnrollmentRouter,
+);
+app.use(
+  `${API_PREFIX}/unknown-contacts`,
+  unknownContactRouter,
 );
 
 app.get(HEALTH_PATH, (_req, res) => {

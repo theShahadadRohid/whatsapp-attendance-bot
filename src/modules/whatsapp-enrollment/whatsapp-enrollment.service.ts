@@ -17,6 +17,15 @@ function normalizePhoneNumber(phoneNumber: string): string {
   return phoneNumber.replace(/\D/g, "");
 }
 
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === 11000
+  );
+}
+
 export async function createWhatsAppEnrollment(
   employeeId: string,
   now = new Date(),
@@ -206,7 +215,6 @@ export async function verifyWhatsAppEnrollmentToken(
     );
   }
 
-  // Only one concurrent request can successfully move pending to verified.
   const verifiedEnrollment =
     await WhatsAppEnrollmentModel.findOneAndUpdate(
       {
@@ -244,12 +252,92 @@ export async function verifyWhatsAppEnrollmentToken(
   };
 }
 
+/**
+ * Finds a verified enrollment belonging to the sender.
+ *
+ * The sender's phone number is the primary verification identity.
+ * If a BSUID was recorded during token verification, a different
+ * BSUID is rejected.
+ */
+export async function findVerifiedWhatsAppEnrollmentForSender(
+  input: {
+    senderPhoneNumber?: string;
+    senderBsuid?: string;
+  },
+) {
+  const senderPhone = input.senderPhoneNumber
+    ? normalizePhoneNumber(input.senderPhoneNumber)
+    : "";
+
+  const senderBsuid = input.senderBsuid?.trim();
+
+  if (!senderPhone && !senderBsuid) {
+    return null;
+  }
+
+  const enrollments = await WhatsAppEnrollmentModel.find({
+    status: "verified",
+  });
+
+  for (const enrollment of enrollments) {
+    const verifiedPhone = enrollment.verifiedPhoneNumber
+      ? normalizePhoneNumber(enrollment.verifiedPhoneNumber)
+      : "";
+
+    const phoneMatches =
+      Boolean(senderPhone) &&
+      Boolean(verifiedPhone) &&
+      senderPhone === verifiedPhone;
+
+    const bsuidMatches =
+      Boolean(senderBsuid) &&
+      Boolean(enrollment.verifiedBsuid) &&
+      senderBsuid === enrollment.verifiedBsuid;
+
+    if (!phoneMatches && !bsuidMatches) {
+      continue;
+    }
+
+    if (
+      senderBsuid &&
+      enrollment.verifiedBsuid &&
+      senderBsuid !== enrollment.verifiedBsuid
+    ) {
+      continue;
+    }
+
+    const employee = await EmployeeModel.findOne({
+      _id: enrollment.employeeId,
+      isActive: true,
+    });
+
+    if (!employee) {
+      continue;
+    }
+
+    return {
+      enrollment,
+      employee,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Accepts explicit consent and links the WhatsApp BSUID only
+ * after the sender has been verified and consent has been given.
+ */
 export async function acceptWhatsAppEnrollmentConsent(
-  enrollmentId: string,
+  input: {
+    enrollmentId: string;
+    senderPhoneNumber: string;
+    senderBsuid?: string;
+  },
   now = new Date(),
 ) {
   const enrollment = await WhatsAppEnrollmentModel.findOne({
-    _id: enrollmentId,
+    _id: input.enrollmentId,
     status: "verified",
   });
 
@@ -257,6 +345,34 @@ export async function acceptWhatsAppEnrollmentConsent(
     throw new AppError(
       "Enrollment must be verified before consent can be accepted.",
       400,
+    );
+  }
+
+  const verifiedPhone = enrollment.verifiedPhoneNumber
+    ? normalizePhoneNumber(enrollment.verifiedPhoneNumber)
+    : "";
+
+  const senderPhone = normalizePhoneNumber(
+    input.senderPhoneNumber,
+  );
+
+  if (!verifiedPhone || !senderPhone || verifiedPhone !== senderPhone) {
+    throw new AppError(
+      "The WhatsApp number does not match the verified enrollment.",
+      403,
+    );
+  }
+
+  const incomingBsuid = input.senderBsuid?.trim();
+
+  if (
+    incomingBsuid &&
+    enrollment.verifiedBsuid &&
+    incomingBsuid !== enrollment.verifiedBsuid
+  ) {
+    throw new AppError(
+      "The WhatsApp identity does not match the verified enrollment.",
+      403,
     );
   }
 
@@ -269,10 +385,75 @@ export async function acceptWhatsAppEnrollmentConsent(
     throw new AppError("Active employee not found.", 404);
   }
 
+  // Prefer the BSUID captured during verification. If Meta did not
+  // provide one then, use the identity from the consent message.
+  const bsuidToLink =
+    enrollment.verifiedBsuid || incomingBsuid;
+
+  let newlyLinkedBsuid = false;
+
+  if (bsuidToLink) {
+    const existingBsuid = employee.whatsappBusinessScopedUserId;
+
+    if (existingBsuid && existingBsuid !== bsuidToLink) {
+      throw new AppError(
+        "This employee already has a different WhatsApp identity linked. Contact your manager.",
+        409,
+      );
+    }
+
+    if (!existingBsuid) {
+      try {
+        const updatedEmployee =
+          await EmployeeModel.findOneAndUpdate(
+            {
+              _id: employee._id,
+              isActive: true,
+              $or: [
+                { whatsappBusinessScopedUserId: { $exists: false } },
+                { whatsappBusinessScopedUserId: null },
+              ],
+            },
+            {
+              $set: {
+                whatsappBusinessScopedUserId: bsuidToLink,
+              },
+            },
+            {
+              returnDocument: "after",
+              runValidators: true,
+            },
+          );
+
+        if (!updatedEmployee) {
+          throw new AppError(
+            "The employee's WhatsApp identity was changed by another request. Please try again.",
+            409,
+          );
+        }
+
+        newlyLinkedBsuid = true;
+      } catch (error) {
+        if (error instanceof AppError) {
+          throw error;
+        }
+
+        if (isDuplicateKeyError(error)) {
+          throw new AppError(
+            "This WhatsApp identity is already linked to another employee.",
+            409,
+          );
+        }
+
+        throw error;
+      }
+    }
+  }
+
   const updatedEnrollment =
     await WhatsAppEnrollmentModel.findOneAndUpdate(
       {
-        _id: enrollmentId,
+        _id: enrollment._id,
         status: "verified",
       },
       {
@@ -289,6 +470,22 @@ export async function acceptWhatsAppEnrollmentConsent(
     );
 
   if (!updatedEnrollment) {
+    // If this request linked a new BSUID but lost the enrollment
+    // state transition, undo only the link created by this request.
+    if (newlyLinkedBsuid && bsuidToLink) {
+      await EmployeeModel.updateOne(
+        {
+          _id: employee._id,
+          whatsappBusinessScopedUserId: bsuidToLink,
+        },
+        {
+          $unset: {
+            whatsappBusinessScopedUserId: 1,
+          },
+        },
+      );
+    }
+
     throw new AppError(
       "Enrollment consent has already been processed.",
       409,

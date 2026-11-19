@@ -9,10 +9,10 @@ import {
   checkInEmployee,
   checkOutEmployee,
 } from "../../attendance/attendance.service.js";
-import { EmployeeModel } from "../../employees/employee.model.js";
 import { findEmployeeByWhatsAppIdentity } from "../../employees/employee.service.js";
 import {
   acceptWhatsAppEnrollmentConsent,
+  findVerifiedWhatsAppEnrollmentForSender,
   revokeWhatsAppEnrollment,
   verifyWhatsAppEnrollmentToken,
 } from "../../whatsapp-enrollment/whatsapp-enrollment.service.js";
@@ -126,8 +126,8 @@ async function sendReply(
       });
     }
   } catch (error) {
-    // The attendance/enrollment operation is already marked processed.
-    // A failed reply must not cause the operation to run again.
+    // The operation is already marked processed. A failed reply must
+    // not cause attendance or enrollment processing to run again.
     logger.error(
       {
         err: error,
@@ -213,6 +213,9 @@ async function handleEnrollmentTokenMessage(
     const result = await verifyWhatsAppEnrollmentToken({
       token,
       senderPhoneNumber: message.from,
+      ...(message.fromUserId
+        ? { senderBsuid: message.fromUserId }
+        : {}),
     });
 
     const employeeId = result.employee._id.toString();
@@ -244,6 +247,7 @@ async function handleEnrollmentTokenMessage(
         employeeId,
         employeeCode: result.employee.employeeCode,
         messageId: message.messageId,
+        hasBsuid: Boolean(message.fromUserId),
       },
       "WhatsApp enrollment token verified.",
     );
@@ -262,7 +266,8 @@ async function handleEnrollmentTokenMessage(
 /**
  * Processes explicit employee consent.
  *
- * A verified enrollment is required before YES can be accepted.
+ * The enrollment must already be verified, and the sender must
+ * match the identity recorded during verification.
  */
 async function handleConsentMessage(
   message: Awaited<
@@ -274,6 +279,7 @@ async function handleConsentMessage(
     fullName: string;
     isActive: boolean;
   },
+  enrollmentId?: string,
 ): Promise<void> {
   const employeeId = employee._id.toString();
 
@@ -296,12 +302,7 @@ async function handleConsentMessage(
       return;
     }
 
-    const enrollment = await WhatsAppEnrollmentModel.findOne({
-      employeeId,
-      status: "verified",
-    });
-
-    if (!enrollment) {
+    if (!enrollmentId) {
       await finishMessage(
         message,
         claim.leaseToken,
@@ -310,23 +311,22 @@ async function handleConsentMessage(
       return;
     }
 
-    // Link the WhatsApp Business-Scoped User ID when Meta provides it.
-    // Identity linking does not itself grant messaging consent.
-    if (message.fromUserId) {
-      await EmployeeModel.updateOne(
-        { _id: employeeId },
-        {
-          $set: {
-            whatsappBusinessScopedUserId: message.fromUserId,
-          },
-        },
-        { runValidators: true },
+    if (!message.from) {
+      await finishMessage(
+        message,
+        claim.leaseToken,
+        "Your WhatsApp phone number could not be verified. Please send YES from your registered phone number.",
       );
+      return;
     }
 
-    await acceptWhatsAppEnrollmentConsent(
-      enrollment._id.toString(),
-    );
+    await acceptWhatsAppEnrollmentConsent({
+      enrollmentId,
+      senderPhoneNumber: message.from,
+      ...(message.fromUserId
+        ? { senderBsuid: message.fromUserId }
+        : {}),
+    });
 
     await finishMessage(
       message,
@@ -353,6 +353,15 @@ async function handleConsentMessage(
       "Employee accepted WhatsApp attendance consent.",
     );
   } catch (error) {
+    if (error instanceof AppError) {
+      await finishMessage(
+        message,
+        claim.leaseToken,
+        error.message,
+      );
+      return;
+    }
+
     await markWhatsAppMessageFailed(
       message.messageId,
       claim.leaseToken,
@@ -400,7 +409,8 @@ async function handleStopMessage(
       ].join("\n");
     } catch (error) {
       if (error instanceof AppError && error.statusCode === 404) {
-        replyMessage = "You do not currently have an active WhatsApp enrollment.";
+        replyMessage =
+          "You do not currently have an active WhatsApp enrollment.";
       } else {
         throw error;
       }
@@ -694,15 +704,42 @@ whatsappWebhookRouter.post(
           continue;
         }
 
+        let command:
+          | ReturnType<typeof parseWhatsAppCommand>
+          | undefined;
+
+        if (message.type === "text" && message.text) {
+          command = parseWhatsAppCommand(message.text);
+        }
+
         // Enrollment token verification must happen before unknown-contact
         // tracking because an employee may not have a linked BSUID yet.
-        if (message.type === "text" && message.text) {
-          const command = parseWhatsAppCommand(message.text);
+        if (command?.type === "enroll") {
+          await handleEnrollmentTokenMessage(
+            message,
+            command.token,
+          );
+          continue;
+        }
 
-          if (command.type === "enroll") {
-            await handleEnrollmentTokenMessage(
+        // A verified sender may not have a linked BSUID yet. Resolve
+        // verified consent before the normal employee identity lookup.
+        if (command?.type === "consent") {
+          const verifiedEnrollment =
+            await findVerifiedWhatsAppEnrollmentForSender({
+              ...(message.from
+                ? { senderPhoneNumber: message.from }
+                : {}),
+              ...(message.fromUserId
+                ? { senderBsuid: message.fromUserId }
+                : {}),
+            });
+
+          if (verifiedEnrollment) {
+            await handleConsentMessage(
               message,
-              command.token,
+              verifiedEnrollment.employee,
+              verifiedEnrollment.enrollment._id.toString(),
             );
             continue;
           }
@@ -734,20 +771,15 @@ whatsappWebhookRouter.post(
           result.status === "active" ||
           result.status === "inactive"
         ) {
-          if (
-            message.type === "text" &&
-            message.text &&
-            parseWhatsAppCommand(message.text).type === "consent"
-          ) {
-            await handleConsentMessage(message, result.employee);
+          if (command?.type === "consent") {
+            await handleConsentMessage(
+              message,
+              result.employee,
+            );
             continue;
           }
 
-          if (
-            message.type === "text" &&
-            message.text &&
-            parseWhatsAppCommand(message.text).type === "stop"
-          ) {
+          if (command?.type === "stop") {
             await handleStopMessage(message, result.employee);
             continue;
           }

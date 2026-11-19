@@ -1,4 +1,6 @@
-
+import { Types } from "mongoose";
+import { AppError } from "../../common/errors/app-error.js";
+import { EmployeeModel } from "../employees/employee.model.js";
 import { UnknownContactModel } from "./unknown-contact.model.js";
 
 const MAX_ATTEMPTS = 3;
@@ -209,4 +211,128 @@ export async function trackUnknownContact(
   throw new Error(
     `Could not update unknown contact ${identityValue} after repeated concurrent changes.`,
   );
+}
+
+
+export async function linkUnknownContactToEmployee(
+  contactId: string,
+  employeeId: string,
+) {
+  if (!Types.ObjectId.isValid(contactId) || !Types.ObjectId.isValid(employeeId)) {
+    throw new AppError(
+      "Invalid contact or employee ID.",
+      400,
+      "INVALID_ID",
+    );
+  }
+
+  const contact = await UnknownContactModel.findById(contactId);
+
+  if (!contact) {
+    throw new AppError(
+      "Unknown contact not found.",
+      404,
+      "UNKNOWN_CONTACT_NOT_FOUND",
+    );
+  }
+
+  if (!contact.phoneNumber) {
+    throw new AppError(
+      "This contact has no phone number to verify against the employee record.",
+      409,
+      "CONTACT_PHONE_REQUIRED",
+    );
+  }
+
+  const employee = await EmployeeModel.findById(employeeId);
+
+  if (!employee) {
+    throw new AppError(
+      "Employee not found.",
+      404,
+      "EMPLOYEE_NOT_FOUND",
+    );
+  }
+
+  if (employee.phoneNumber !== contact.phoneNumber) {
+    throw new AppError(
+      "The contact phone number does not match the employee's registered phone number.",
+      409,
+      "PHONE_NUMBER_MISMATCH",
+    );
+  }
+
+  const bsuid = contact.whatsappBusinessScopedUserId;
+
+  if (
+    bsuid &&
+    employee.whatsappBusinessScopedUserId &&
+    employee.whatsappBusinessScopedUserId !== bsuid
+  ) {
+    throw new AppError(
+      "This employee is already linked to another WhatsApp identity.",
+      409,
+      "EMPLOYEE_WHATSAPP_ALREADY_LINKED",
+    );
+  }
+
+  try {
+    if (bsuid) {
+      const updatedEmployee = await EmployeeModel.findOneAndUpdate(
+        {
+          _id: employee._id,
+          phoneNumber: contact.phoneNumber,
+          $or: [
+            { whatsappBusinessScopedUserId: bsuid },
+            { whatsappBusinessScopedUserId: { $exists: false } },
+            { whatsappBusinessScopedUserId: null },
+          ],
+        },
+        {
+          $set: {
+            whatsappBusinessScopedUserId: bsuid,
+          },
+        },
+        {
+          returnDocument: "after",
+          runValidators: true,
+        },
+      );
+
+      if (!updatedEmployee) {
+        throw new AppError(
+          "The employee's WhatsApp identity changed. Refresh and try again.",
+          409,
+          "WHATSAPP_LINK_CONFLICT",
+        );
+      }
+    }
+
+    await UnknownContactModel.deleteOne({
+      _id: contact._id,
+    });
+
+    return {
+      employeeId: employee._id.toString(),
+      employeeCode: employee.employeeCode,
+      fullName: employee.fullName,
+      phoneNumber: employee.phoneNumber,
+      whatsappBusinessScopedUserId: bsuid ?? employee.whatsappBusinessScopedUserId,
+    };
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === 11000
+    ) {
+      throw new AppError(
+        "This WhatsApp identity is already linked to another employee.",
+        409,
+        "WHATSAPP_IDENTITY_ALREADY_LINKED",
+      );
+    }
+
+    throw error;
+  }
 }
