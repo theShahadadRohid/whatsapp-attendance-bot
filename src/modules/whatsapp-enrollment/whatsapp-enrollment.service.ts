@@ -45,6 +45,8 @@ export async function createWhatsAppEnrollment(
       },
       $unset: {
         verifiedAt: 1,
+        verifiedPhoneNumber: 1,
+        verifiedBsuid: 1,
         consentedAt: 1,
         consentVersion: 1,
         revokedAt: 1,
@@ -52,8 +54,9 @@ export async function createWhatsAppEnrollment(
     },
     {
       upsert: true,
-      new: true,
+      returnDocument: "after",
       runValidators: true,
+      setDefaultsOnInsert: true,
     },
   );
 
@@ -68,6 +71,7 @@ export async function verifyWhatsAppEnrollmentToken(
   input: {
     token: string;
     senderPhoneNumber: string;
+    senderBsuid?: string;
   },
   now = new Date(),
 ) {
@@ -79,53 +83,163 @@ export async function verifyWhatsAppEnrollmentToken(
   });
 
   if (!enrollment) {
-    throw new AppError("Invalid or already used enrollment token.", 400);
+    throw new AppError(
+      "Invalid or already used enrollment token.",
+      400,
+    );
   }
 
   if (enrollment.expiresAt <= now) {
-    enrollment.status = "expired";
-    await enrollment.save();
+    await WhatsAppEnrollmentModel.updateOne(
+      {
+        _id: enrollment._id,
+        status: "pending",
+      },
+      {
+        $set: { status: "expired" },
+      },
+    );
 
     throw new AppError("Enrollment token has expired.", 400);
   }
 
   if (enrollment.attemptCount >= MAX_VERIFICATION_ATTEMPTS) {
-    enrollment.status = "revoked";
-    enrollment.revokedAt = now;
-    await enrollment.save();
+    await WhatsAppEnrollmentModel.updateOne(
+      {
+        _id: enrollment._id,
+        status: "pending",
+      },
+      {
+        $set: {
+          status: "revoked",
+          revokedAt: now,
+        },
+      },
+    );
 
-    throw new AppError("Maximum verification attempts exceeded.", 429);
+    throw new AppError(
+      "Maximum verification attempts exceeded.",
+      429,
+    );
   }
 
-  const employee = await EmployeeModel.findById(enrollment.employeeId);
+  const employee = await EmployeeModel.findById(
+    enrollment.employeeId,
+  );
 
   if (!employee || !employee.isActive) {
+    await WhatsAppEnrollmentModel.updateOne(
+      {
+        _id: enrollment._id,
+        status: "pending",
+      },
+      {
+        $set: {
+          status: "revoked",
+          revokedAt: now,
+        },
+      },
+    );
+
     throw new AppError("Active employee not found.", 404);
   }
 
-  const registeredPhone = normalizePhoneNumber(employee.phoneNumber);
-  const senderPhone = normalizePhoneNumber(input.senderPhoneNumber);
+  const registeredPhone = normalizePhoneNumber(
+    employee.phoneNumber,
+  );
+
+  const senderPhone = normalizePhoneNumber(
+    input.senderPhoneNumber,
+  );
 
   if (!registeredPhone || registeredPhone !== senderPhone) {
-    enrollment.attemptCount += 1;
+    const updatedEnrollment =
+      await WhatsAppEnrollmentModel.findOneAndUpdate(
+        {
+          _id: enrollment._id,
+          status: "pending",
+          expiresAt: { $gt: now },
+          attemptCount: { $lt: MAX_VERIFICATION_ATTEMPTS },
+        },
+        {
+          $inc: { attemptCount: 1 },
+        },
+        {
+          returnDocument: "after",
+        },
+      );
 
-    if (enrollment.attemptCount >= MAX_VERIFICATION_ATTEMPTS) {
-      enrollment.status = "revoked";
-      enrollment.revokedAt = now;
+    if (
+      updatedEnrollment &&
+      updatedEnrollment.attemptCount >= MAX_VERIFICATION_ATTEMPTS
+    ) {
+      await WhatsAppEnrollmentModel.updateOne(
+        {
+          _id: enrollment._id,
+          status: "pending",
+          attemptCount: { $gte: MAX_VERIFICATION_ATTEMPTS },
+        },
+        {
+          $set: {
+            status: "revoked",
+            revokedAt: now,
+          },
+        },
+      );
+
+      throw new AppError(
+        "Maximum verification attempts exceeded. Request a new enrollment token.",
+        429,
+      );
     }
 
-    await enrollment.save();
+    if (!updatedEnrollment) {
+      throw new AppError(
+        "Invalid, expired, or already used enrollment token.",
+        400,
+      );
+    }
 
-    throw new AppError("WhatsApp number does not match employee record.", 403);
+    throw new AppError(
+      "WhatsApp number does not match employee record.",
+      403,
+    );
   }
 
-  enrollment.status = "verified";
-  enrollment.verifiedAt = now;
+  // Only one concurrent request can successfully move pending to verified.
+  const verifiedEnrollment =
+    await WhatsAppEnrollmentModel.findOneAndUpdate(
+      {
+        _id: enrollment._id,
+        status: "pending",
+        expiresAt: { $gt: now },
+        attemptCount: { $lt: MAX_VERIFICATION_ATTEMPTS },
+      },
+      {
+        $set: {
+          status: "verified",
+          verifiedAt: now,
+          verifiedPhoneNumber: input.senderPhoneNumber,
+          ...(input.senderBsuid
+            ? { verifiedBsuid: input.senderBsuid }
+            : {}),
+        },
+      },
+      {
+        returnDocument: "after",
+        runValidators: true,
+      },
+    );
 
-  await enrollment.save();
+  if (!verifiedEnrollment) {
+    throw new AppError(
+      "Enrollment token is expired or has already been used.",
+      400,
+    );
+  }
 
   return {
-    enrollment,
+    enrollment: verifiedEnrollment,
     employee,
   };
 }
@@ -134,23 +248,10 @@ export async function acceptWhatsAppEnrollmentConsent(
   enrollmentId: string,
   now = new Date(),
 ) {
-  const enrollment = await WhatsAppEnrollmentModel.findOneAndUpdate(
-    {
-      _id: enrollmentId,
-      status: "verified",
-    },
-    {
-      $set: {
-        status: "enrolled",
-        consentedAt: now,
-        consentVersion: CONSENT_VERSION,
-      },
-    },
-    {
-      new: true,
-      runValidators: true,
-    },
-  );
+  const enrollment = await WhatsAppEnrollmentModel.findOne({
+    _id: enrollmentId,
+    status: "verified",
+  });
 
   if (!enrollment) {
     throw new AppError(
@@ -159,7 +260,42 @@ export async function acceptWhatsAppEnrollmentConsent(
     );
   }
 
-  return enrollment;
+  const employee = await EmployeeModel.findOne({
+    _id: enrollment.employeeId,
+    isActive: true,
+  });
+
+  if (!employee) {
+    throw new AppError("Active employee not found.", 404);
+  }
+
+  const updatedEnrollment =
+    await WhatsAppEnrollmentModel.findOneAndUpdate(
+      {
+        _id: enrollmentId,
+        status: "verified",
+      },
+      {
+        $set: {
+          status: "enrolled",
+          consentedAt: now,
+          consentVersion: CONSENT_VERSION,
+        },
+      },
+      {
+        returnDocument: "after",
+        runValidators: true,
+      },
+    );
+
+  if (!updatedEnrollment) {
+    throw new AppError(
+      "Enrollment consent has already been processed.",
+      409,
+    );
+  }
+
+  return updatedEnrollment;
 }
 
 export async function revokeWhatsAppEnrollment(
@@ -178,7 +314,8 @@ export async function revokeWhatsAppEnrollment(
       },
     },
     {
-      new: true,
+      returnDocument: "after",
+      runValidators: true,
     },
   );
 

@@ -39,10 +39,21 @@ const whatsappEnrollmentSchema = new Schema(
       type: Number,
       default: 0,
       required: true,
+      min: 0,
     },
 
     verifiedAt: {
       type: Date,
+      default: undefined,
+    },
+
+    verifiedPhoneNumber: {
+      type: String,
+      default: undefined,
+    },
+
+    verifiedBsuid: {
+      type: String,
       default: undefined,
     },
 
@@ -68,8 +79,15 @@ const whatsappEnrollmentSchema = new Schema(
   },
 );
 
-whatsappEnrollmentSchema.index({ tokenHash: 1 }, { unique: true });
-whatsappEnrollmentSchema.index({ status: 1, expiresAt: 1 });
+whatsappEnrollmentSchema.index(
+  { tokenHash: 1 },
+  { unique: true },
+);
+
+whatsappEnrollmentSchema.index({
+  status: 1,
+  expiresAt: 1,
+});
 
 export type WhatsAppEnrollment = InferSchemaType<
   typeof whatsappEnrollmentSchema
