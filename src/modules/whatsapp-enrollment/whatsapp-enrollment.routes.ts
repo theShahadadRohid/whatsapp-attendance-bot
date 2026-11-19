@@ -1,4 +1,3 @@
-
 import { Router } from "express";
 
 import { requireAuth } from "../../common/middleware/auth.middleware.js";
@@ -7,6 +6,8 @@ import { validateBody } from "../../common/middleware/validate.middleware.js";
 import {
   createWhatsAppEnrollmentController,
   getWhatsAppEnrollmentController,
+  listWhatsAppEnrollmentsController,
+  reissueWhatsAppEnrollmentController,
   revokeWhatsAppEnrollmentController,
 } from "./whatsapp-enrollment.controller.js";
 
@@ -17,45 +18,54 @@ import {
 
 const whatsappEnrollmentRouter = Router();
 
-// All enrollment management routes require admin authentication.
 whatsappEnrollmentRouter.use(requireAuth);
 
-// Create or reissue an enrollment invitation.
+function validateEmployeeId(
+  req: Parameters<import("express").RequestHandler>[0],
+  _res: Parameters<import("express").RequestHandler>[1],
+  next: Parameters<import("express").RequestHandler>[2],
+) {
+  const result = employeeIdSchema.safeParse(req.params.employeeId);
+
+  if (!result.success) {
+    next(result.error);
+    return;
+  }
+
+  next();
+}
+
+// List, search, filter and paginate enrollments.
+whatsappEnrollmentRouter.get(
+  "/",
+  listWhatsAppEnrollmentsController,
+);
+
+// Create an enrollment invitation.
 whatsappEnrollmentRouter.post(
   "/",
   validateBody(createWhatsAppEnrollmentSchema),
   createWhatsAppEnrollmentController,
 );
 
-// Retrieve an employee's enrollment status.
+// Reissue an invitation for an employee.
+whatsappEnrollmentRouter.post(
+  "/:employeeId/reissue",
+  validateEmployeeId,
+  reissueWhatsAppEnrollmentController,
+);
+
+// Retrieve an employee's enrollment details.
 whatsappEnrollmentRouter.get(
   "/:employeeId",
-  (req, _res, next) => {
-    const result = employeeIdSchema.safeParse(req.params.employeeId);
-
-    if (!result.success) {
-      next(result.error);
-      return;
-    }
-
-    next();
-  },
+  validateEmployeeId,
   getWhatsAppEnrollmentController,
 );
 
-// Revoke an employee's enrollment.
+// Revoke an employee's enrollment and unlink their WhatsApp identity.
 whatsappEnrollmentRouter.patch(
   "/:employeeId/revoke",
-  (req, _res, next) => {
-    const result = employeeIdSchema.safeParse(req.params.employeeId);
-
-    if (!result.success) {
-      next(result.error);
-      return;
-    }
-
-    next();
-  },
+  validateEmployeeId,
   revokeWhatsAppEnrollmentController,
 );
 
