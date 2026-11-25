@@ -1,4 +1,4 @@
-
+import argon2 from "argon2";
 import { EmployeeModel } from "./employee.model.js";
 import type {
   CreateEmployeeInput,
@@ -224,4 +224,59 @@ export async function deactivateEmployee(id: string) {
   }
 
   return employee;
+}
+
+
+export async function createEmployeeAccount(
+  id: string,
+  password: string,
+) {
+  const employee = await EmployeeModel.findById(id).select("+passwordHash");
+
+  if (!employee) {
+    throw new AppError(
+      "Employee not found.",
+      404,
+      "EMPLOYEE_NOT_FOUND",
+    );
+  }
+
+  if (!employee.isActive) {
+    throw new AppError(
+      "Cannot create an account for an inactive employee.",
+      400,
+      "EMPLOYEE_INACTIVE",
+    );
+  }
+
+  if (employee.passwordHash) {
+    throw new AppError(
+      "This employee already has a login account.",
+      409,
+      "EMPLOYEE_ACCOUNT_EXISTS",
+    );
+  }
+
+  const passwordHash = await argon2.hash(password);
+
+  // Atomic update prevents two simultaneous account creations.
+  const result = await EmployeeModel.updateOne(
+    {
+      _id: id,
+      passwordHash: { $exists: false },
+    },
+    {
+      $set: { passwordHash },
+    },
+  );
+
+  if (result.modifiedCount !== 1) {
+    throw new AppError(
+      "An employee login account already exists.",
+      409,
+      "EMPLOYEE_ACCOUNT_EXISTS",
+    );
+  }
+
+  return getEmployeeById(id);
 }

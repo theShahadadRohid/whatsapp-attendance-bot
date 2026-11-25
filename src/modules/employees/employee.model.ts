@@ -43,6 +43,12 @@ const employeeSchema = new Schema(
       trim: true,
     },
 
+    passwordHash: {
+      type: String,
+      select: false,
+      default: undefined
+    },
+
     employmentType: {
       type: String,
       enum: EMPLOYMENT_TYPES,
