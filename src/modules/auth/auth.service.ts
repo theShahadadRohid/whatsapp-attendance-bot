@@ -282,6 +282,7 @@ export async function listPasswordResetRequests() {
     .lean();
 }
 
+
 export async function adminResetEmployeePassword(
   requestId: string,
   adminId: string,
@@ -309,6 +310,8 @@ export async function adminResetEmployeePassword(
       "RESET_REQUEST_NOT_FOUND",
     );
   }
+
+  let employeePasswordUpdated = false;
 
   try {
     const passwordHash = await argon2.hash(temporaryPassword);
@@ -341,7 +344,9 @@ export async function adminResetEmployeePassword(
       );
     }
 
-    await PasswordResetRequestModel.updateOne(
+    employeePasswordUpdated = true;
+
+    const resolvedRequest = await PasswordResetRequestModel.updateOne(
       {
         _id: request._id,
         status: "processing",
@@ -355,22 +360,34 @@ export async function adminResetEmployeePassword(
       },
     );
 
+    if (resolvedRequest.modifiedCount !== 1) {
+      throw new AppError(
+        "Password was updated, but the reset request could not be finalized. Admin intervention is required.",
+        500,
+        "RESET_REQUEST_FINALIZATION_FAILED",
+      );
+    }
+
     return {
       message:
         "Temporary password created successfully. The employee must change it after logging in.",
     };
   } catch (error) {
-    await PasswordResetRequestModel.updateOne(
-      {
-        _id: request._id,
-        status: "processing",
-      },
-      {
-        $set: {
-          status: "pending",
+    // Only return to pending if the employee's password
+    // has NOT already been changed.
+    if (!employeePasswordUpdated) {
+      await PasswordResetRequestModel.updateOne(
+        {
+          _id: request._id,
+          status: "processing",
         },
-      },
-    );
+        {
+          $set: {
+            status: "pending",
+          },
+        },
+      );
+    }
 
     throw error;
   }

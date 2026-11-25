@@ -1,6 +1,8 @@
 
 import type { Request, Response, NextFunction } from "express";
 import type { AuthenticatedRequest } from "../../modules/auth/auth.types.js";
+import { AppError } from "../../common/errors/app-error.js";
+
 import {
   getCompanySchedule,
   updateCompanySchedule,
@@ -9,7 +11,11 @@ import {
   getHolidayById,
   updateHoliday,
   deleteHoliday,
-} from "./schedule.service";
+} from "./schedule.service.js";
+
+// --------------------------------------------------
+// COMPANY SCHEDULE
+// --------------------------------------------------
 
 export async function getScheduleHandler(
   _req: Request,
@@ -45,6 +51,10 @@ export async function updateScheduleHandler(
   }
 }
 
+// --------------------------------------------------
+// COMPANY HOLIDAYS
+// --------------------------------------------------
+
 export async function createHolidayHandler(
   req: Request,
   res: Response,
@@ -52,10 +62,19 @@ export async function createHolidayHandler(
 ): Promise<void> {
   try {
     const authenticatedRequest = req as AuthenticatedRequest;
-    const holiday = await createHoliday(
-      req.body,
-      authenticatedRequest.auth?.adminId,
-    );
+    const auth = authenticatedRequest.auth;
+
+    if (!auth || auth.accountType !== "admin") {
+      throw new AppError(
+        "Authentication required.",
+        401,
+        "UNAUTHORIZED",
+      );
+    }
+
+    const adminId = auth.adminId;
+
+    const holiday = await createHoliday(req.body, adminId);
 
     res.status(201).json({
       message: "Company holiday created successfully.",

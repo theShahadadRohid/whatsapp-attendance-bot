@@ -22,6 +22,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { employeeRouter } from "./modules/employees/employee.routes.js";
 import { scheduleRouter } from "./modules/schedules/schedule.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
+import { employeeAttendanceRouter } from "./modules/attendance/employee-attendance.routes.js";
 
 export const app = express();
 
@@ -82,6 +83,10 @@ app.use(`${API_PREFIX}/auth`, authRouter);
 app.use(`${API_PREFIX}/employees`, employeeRouter);
 app.use(`${API_PREFIX}/schedules`, scheduleRouter);
 app.use(`${API_PREFIX}/attendance`, attendanceRouter);
+app.use(
+  `${API_PREFIX}/employee/attendance`,
+  employeeAttendanceRouter,
+);
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({

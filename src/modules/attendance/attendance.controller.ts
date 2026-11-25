@@ -1,23 +1,55 @@
-
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import { AppError } from "../../common/errors/app-error.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
+
 import {
   checkInEmployee,
   checkOutEmployee,
+  checkInEmployeeFromOffice,
+  checkOutEmployeeFromOffice,
   correctAttendance,
   getAttendanceDashboard,
   getAttendanceReviewQueue,
   getEmployeeAttendanceHistory,
+  getEmployeeTodayAttendance,
   listAttendanceRecords,
   processDailyAttendance,
   reviewAttendance,
 } from "./attendance.service.js";
+
 import type {
   CheckInPayload,
   CheckOutPayload,
   CorrectAttendancePayload,
 } from "./attendance.schema.js";
+
+// --------------------------------------------------
+// AUTH HELPERS
+// --------------------------------------------------
+
+function getAdminId(req: Request): string {
+  const auth = (req as AuthenticatedRequest).auth;
+
+  if (!auth || auth.accountType !== "admin") {
+    throw new AppError("Authentication required.", 401, "UNAUTHORIZED");
+  }
+
+  return auth.adminId;
+}
+
+function getEmployeeId(req: Request): string {
+  const auth = (req as AuthenticatedRequest).auth;
+
+  if (!auth || auth.accountType !== "employee") {
+    throw new AppError("Authentication required.", 401, "UNAUTHORIZED");
+  }
+
+  return auth.employeeId;
+}
+
+// --------------------------------------------------
+// ADMIN ATTENDANCE
+// --------------------------------------------------
 
 export const checkIn: RequestHandler = async (req, res, next) => {
   try {
@@ -53,9 +85,7 @@ export const checkOut: RequestHandler = async (req, res, next) => {
 
 export const processDaily: RequestHandler = async (req, res, next) => {
   try {
-    const result = await processDailyAttendance(
-      String(req.params.date),
-    );
+    const result = await processDailyAttendance(String(req.params.date));
 
     res.status(200).json({
       message: "Daily attendance processing completed.",
@@ -72,12 +102,7 @@ export const reviewAutoCheckout: RequestHandler = async (
   next,
 ) => {
   try {
-    const authenticatedRequest = req as AuthenticatedRequest;
-    const adminId = authenticatedRequest.auth?.adminId;
-
-    if (!adminId) {
-      throw new AppError("Authentication required.", 401, "UNAUTHORIZED");
-    }
+    const adminId = getAdminId(req);
 
     const attendance = await reviewAttendance(
       String(req.params.id),
@@ -92,7 +117,6 @@ export const reviewAutoCheckout: RequestHandler = async (
     next(error);
   }
 };
-
 
 export const getDashboard: RequestHandler = async (req, res, next) => {
   try {
@@ -110,7 +134,6 @@ export const getDashboard: RequestHandler = async (req, res, next) => {
   }
 };
 
-
 export const getAttendanceList: RequestHandler = async (
   req,
   res,
@@ -118,18 +141,12 @@ export const getAttendanceList: RequestHandler = async (
 ) => {
   try {
     const result = await listAttendanceRecords({
-      ...(typeof req.query.date === "string" && {
-        date: req.query.date,
-      }),
+      ...(typeof req.query.date === "string" && { date: req.query.date }),
       ...(typeof req.query.status === "string" && {
         status: req.query.status,
       }),
-      ...(typeof req.query.page === "string" && {
-        page: req.query.page,
-      }),
-      ...(typeof req.query.limit === "string" && {
-        limit: req.query.limit,
-      }),
+      ...(typeof req.query.page === "string" && { page: req.query.page }),
+      ...(typeof req.query.limit === "string" && { limit: req.query.limit }),
       ...(typeof req.query.search === "string" && {
         search: req.query.search,
       }),
@@ -144,7 +161,6 @@ export const getAttendanceList: RequestHandler = async (
   }
 };
 
-
 export const getEmployeeHistory: RequestHandler = async (
   req,
   res,
@@ -154,15 +170,9 @@ export const getEmployeeHistory: RequestHandler = async (
     const result = await getEmployeeAttendanceHistory(
       String(req.params.employeeId),
       {
-        ...(typeof req.query.from === "string" && {
-          from: req.query.from,
-        }),
-        ...(typeof req.query.to === "string" && {
-          to: req.query.to,
-        }),
-        ...(typeof req.query.page === "string" && {
-          page: req.query.page,
-        }),
+        ...(typeof req.query.from === "string" && { from: req.query.from }),
+        ...(typeof req.query.to === "string" && { to: req.query.to }),
+        ...(typeof req.query.page === "string" && { page: req.query.page }),
         ...(typeof req.query.limit === "string" && {
           limit: req.query.limit,
         }),
@@ -178,8 +188,6 @@ export const getEmployeeHistory: RequestHandler = async (
   }
 };
 
-
-
 export const getReviewQueue: RequestHandler = async (
   req,
   res,
@@ -187,15 +195,9 @@ export const getReviewQueue: RequestHandler = async (
 ) => {
   try {
     const result = await getAttendanceReviewQueue({
-      ...(typeof req.query.date === "string" && {
-        date: req.query.date,
-      }),
-      ...(typeof req.query.page === "string" && {
-        page: req.query.page,
-      }),
-      ...(typeof req.query.limit === "string" && {
-        limit: req.query.limit,
-      }),
+      ...(typeof req.query.date === "string" && { date: req.query.date }),
+      ...(typeof req.query.page === "string" && { page: req.query.page }),
+      ...(typeof req.query.limit === "string" && { limit: req.query.limit }),
     });
 
     res.status(200).json({
@@ -207,23 +209,13 @@ export const getReviewQueue: RequestHandler = async (
   }
 };
 
-
 export const correctAttendanceRecord: RequestHandler = async (
   req,
   res,
   next,
 ) => {
   try {
-    const authenticatedRequest = req as AuthenticatedRequest;
-    const adminId = authenticatedRequest.auth?.adminId;
-
-    if (!adminId) {
-      throw new AppError(
-        "Authentication required.",
-        401,
-        "UNAUTHORIZED",
-      );
-    }
+    const adminId = getAdminId(req);
 
     const attendance = await correctAttendance(
       String(req.params.id),
@@ -234,6 +226,99 @@ export const correctAttendanceRecord: RequestHandler = async (
     res.status(200).json({
       message: "Attendance record corrected successfully.",
       data: { attendance },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --------------------------------------------------
+// EMPLOYEE SELF-SERVICE ATTENDANCE
+// --------------------------------------------------
+
+export const employeeCheckIn: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    const attendance = await checkInEmployeeFromOffice(
+      employeeId,
+      req.body as CheckInPayload,
+    );
+
+    res.status(201).json({
+      message: "Check-in successful.",
+      data: { attendance },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const employeeCheckOut: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    const attendance = await checkOutEmployeeFromOffice(
+      employeeId,
+      req.body as CheckOutPayload,
+    );
+
+    res.status(200).json({
+      message: "Check-out successful.",
+      data: { attendance },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getMyTodayAttendance: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    const result = await getEmployeeTodayAttendance(employeeId);
+
+    res.status(200).json({
+      message: "Today's attendance retrieved successfully.",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getMyAttendanceHistory: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    const result = await getEmployeeAttendanceHistory(employeeId, {
+      ...(typeof req.query.from === "string" && { from: req.query.from }),
+      ...(typeof req.query.to === "string" && { to: req.query.to }),
+      ...(typeof req.query.page === "string" && { page: req.query.page }),
+      ...(typeof req.query.limit === "string" && {
+        limit: req.query.limit,
+      }),
+    });
+
+    res.status(200).json({
+      message: "Your attendance history retrieved successfully.",
+      data: result,
     });
   } catch (error) {
     next(error);

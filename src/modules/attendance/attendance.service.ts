@@ -1,4 +1,5 @@
 import mongoose, { Types } from "mongoose";
+import { validateOfficeLocation } from "../locations/location.service.js";
 import { AppError } from "../../common/errors/app-error";
 import { APP_TIME_ZONE } from "../../constants/app.constants";
 import { EmployeeModel } from "../employees/employee.model";
@@ -991,4 +992,61 @@ export async function correctAttendance(
   attendance.correctedBy = new Types.ObjectId(adminId);
 
   return attendance.save();
+}
+
+
+
+export async function checkInEmployeeFromOffice(
+  employeeId: string,
+  input: CheckInPayload = {},
+  now = new Date(),
+) {
+  if (!input.location) {
+    throw new AppError(
+      "Location is required for check-in.",
+      400,
+      "LOCATION_REQUIRED",
+    );
+  }
+
+  validateOfficeLocation(input.location);
+
+  return checkInEmployee(employeeId, input, now);
+}
+
+export async function checkOutEmployeeFromOffice(
+  employeeId: string,
+  input: CheckOutPayload = {},
+  now = new Date(),
+) {
+  if (!input.location) {
+    throw new AppError(
+      "Location is required for check-out.",
+      400,
+      "LOCATION_REQUIRED",
+    );
+  }
+
+  validateOfficeLocation(input.location);
+
+  return checkOutEmployee(employeeId, input, now);
+}
+
+export async function getEmployeeTodayAttendance(employeeId: string) {
+  const employee = await getActiveEmployee(employeeId);
+  const schedule = await getCompanyRules();
+  const timeZone = schedule.timeZone || APP_TIME_ZONE;
+
+  const today = getLocalDateTime(new Date(), timeZone);
+
+  const attendance = await Attendance.findOne({
+    employee: employee._id,
+    date: today.date,
+  });
+
+  return {
+    date: today.date,
+    timeZone,
+    attendance,
+  };
 }
