@@ -1,15 +1,19 @@
+
 import type { RequestHandler } from "express";
 import jwt, { type JwtPayload } from "jsonwebtoken";
 
 import { AppError } from "../../common/errors/app-error.js";
 import { env } from "../../config/env.js";
 import { APP_NAME } from "../../constants/app.constants.js";
-import { ADMIN_ROLES, AdminRole } from "../../modules/auth/admin.model.js";
-import { AuthenticatedRequest } from "../../modules/auth/auth.types.js";
-
+import {
+  ADMIN_ROLES,
+  type AdminRole
+} from "../../modules/auth/admin.model.js";
+import type { AuthenticatedRequest } from "../../modules/auth/auth.types.js";
 
 interface AccessTokenPayload extends JwtPayload {
   sub: string;
+  accountType: "admin";
   role: AdminRole;
 }
 
@@ -40,6 +44,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
     if (
       typeof decoded === "string" ||
       !decoded.sub ||
+      decoded.accountType !== "admin" ||
       typeof decoded.role !== "string" ||
       !ADMIN_ROLES.includes(decoded.role as AdminRole)
     ) {

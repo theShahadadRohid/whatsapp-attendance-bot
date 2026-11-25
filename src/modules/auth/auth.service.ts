@@ -1,3 +1,4 @@
+
 import argon2 from "argon2";
 import jwt from "jsonwebtoken";
 
@@ -12,7 +13,6 @@ export async function loginAdmin(input: LoginInput) {
     email: input.email
   }).select("+passwordHash");
 
-  // Use the same response for an unknown email and a wrong password.
   if (!admin || !admin.isActive) {
     throw new AppError(
       "Invalid email or password.",
@@ -36,6 +36,7 @@ export async function loginAdmin(input: LoginInput) {
 
   const accessToken = jwt.sign(
     {
+      accountType: "admin",
       role: admin.role
     },
     env.JWT_SECRET,
