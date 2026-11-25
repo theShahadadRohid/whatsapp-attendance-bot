@@ -1,6 +1,8 @@
+
 import type { Request, Response } from "express";
-import { connectToDatabase } from "../src/config/database";
-import { app } from "../src/app";
+
+import { app } from "../src/app.js";
+import { connectToDatabase } from "../src/config/database.js";
 
 let databaseConnection: Promise<boolean> | undefined;
 
