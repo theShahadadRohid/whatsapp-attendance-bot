@@ -35,6 +35,11 @@ export const createEmployeeSchema = z.object({
   employmentType: z.enum(EMPLOYMENT_TYPES),
 
   department: z.string().trim().min(2).max(80).optional(),
+
+  password: z
+  .string()
+  .min(8, "Password must be at least 8 characters.")
+  .max(128, "Password cannot exceed 128 characters."),
 });
 
 export const updateEmployeeSchema = z

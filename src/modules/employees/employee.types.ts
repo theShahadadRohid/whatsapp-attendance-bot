@@ -11,6 +11,7 @@ export interface CreateEmployeeInput {
   phoneNumber: string;
   employmentType: EmploymentType;
   department?: string;
+  password: string;
 }
 
 export interface UpdateEmployeeInput {

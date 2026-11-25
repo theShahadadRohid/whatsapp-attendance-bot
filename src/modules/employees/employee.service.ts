@@ -101,20 +101,43 @@ export async function createEmployee(input: CreateEmployeeInput) {
       );
     }
 
-    return await EmployeeModel.create(input);
+    const { password, ...employeeData } = input;
+
+    const passwordHash = await argon2.hash(password);
+
+    const employee = await EmployeeModel.create({
+      ...employeeData,
+      passwordHash,
+    });
+
+    const safeEmployee = employee.toObject();
+
+    delete safeEmployee.passwordHash;
+
+    return {
+      ...safeEmployee,
+      hasAccount: true,
+    };
   } catch (error) {
     handleDuplicateEmployeeError(error);
   }
 }
 
 export async function getEmployeeById(id: string) {
-  const employee = await EmployeeModel.findById(id).lean();
+  const employee = await EmployeeModel.findById(id)
+    .select("+passwordHash")
+    .lean();
 
   if (!employee) {
     throw new AppError("Employee not found.", 404, "EMPLOYEE_NOT_FOUND");
   }
 
-  return employee;
+  const { passwordHash, ...safeEmployee } = employee;
+
+  return {
+    ...safeEmployee,
+    hasAccount: Boolean(passwordHash),
+  };
 }
 
 export async function listEmployees(options?: {
