@@ -22,9 +22,6 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { employeeRouter } from "./modules/employees/employee.routes.js";
 import { scheduleRouter } from "./modules/schedules/schedule.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
-import { whatsappWebhookRouter } from "./modules/integrations/whatsapp/whatsapp.webhook.js";
-import { whatsappEnrollmentRouter } from "./modules/whatsapp-enrollment/whatsapp-enrollment.routes.js";
-import { unknownContactRouter } from "./modules/unknown-contacts/unknown-contact.routes.js";
 
 export const app = express();
 
@@ -69,8 +66,6 @@ app.use(
   }),
 );
 
-// WhatsApp webhook must receive the raw request body for signature verification.
-app.use("/webhooks/whatsapp", whatsappWebhookRouter);
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -87,14 +82,6 @@ app.use(`${API_PREFIX}/auth`, authRouter);
 app.use(`${API_PREFIX}/employees`, employeeRouter);
 app.use(`${API_PREFIX}/schedules`, scheduleRouter);
 app.use(`${API_PREFIX}/attendance`, attendanceRouter);
-app.use(
-  `${API_PREFIX}/whatsapp-enrollments`,
-  whatsappEnrollmentRouter,
-);
-app.use(
-  `${API_PREFIX}/unknown-contacts`,
-  unknownContactRouter,
-);
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({
