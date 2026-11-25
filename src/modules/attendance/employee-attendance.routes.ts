@@ -5,11 +5,14 @@ import {
   employeeCheckIn,
   employeeCheckOut,
   getMyAttendanceHistory,
+  getMyTodayAttendance,
 } from "./attendance.controller.js";
 import {
   checkInSchema,
   checkOutSchema,
 } from "./attendance.schema.js";
+
+
 
 export const employeeAttendanceRouter = Router();
 
@@ -31,3 +34,5 @@ employeeAttendanceRouter.get(
   "/history",
   getMyAttendanceHistory,
 );
+
+employeeAttendanceRouter.get("/today", getMyTodayAttendance);

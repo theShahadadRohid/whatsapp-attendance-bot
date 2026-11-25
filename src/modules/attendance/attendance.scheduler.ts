@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import { logger } from "../../common/logging/logger.js";
 import { APP_TIME_ZONE } from "../../constants/app.constants.js";
 import { CompanySchedule } from "../schedules/schedule.model.js";
-import { processDailyAttendance } from "./attendance.service.js";
+import { processPendingAttendanceDates } from "./attendance.processor.js";
 
 const RETRY_DELAY_MS = 5 * 60 * 1000;
 
@@ -14,137 +14,54 @@ export async function startAttendanceScheduler(): Promise<
 > {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let isStopped = false;
-  // let isRunning = false;
   let activeProcessing: Promise<boolean> | undefined;
 
-  /**
-   * Processes every unprocessed date up to yesterday.
-   *
-   * The first run initializes the progress marker by processing
-   * yesterday only. Later runs recover all missed dates.
-   */
-  const processPendingDates = async (): Promise<void> => {
-    const schedule = await CompanySchedule.findOne({ key: "company" });
-
-    if (!schedule) {
-      throw new Error("Company schedule has not been configured.");
+  const runProcessing = (
+    reason: ProcessingReason,
+  ): Promise<boolean> => {
+    if (isStopped) {
+      return Promise.resolve(false);
     }
 
-    const timeZone = schedule.timeZone || APP_TIME_ZONE;
-    const now = DateTime.now().setZone(timeZone);
-
-    if (!now.isValid) {
-      throw new Error(`Invalid scheduler timezone: ${timeZone}`);
-    }
-
-    const yesterday = now.minus({ days: 1 }).startOf("day");
-
-    let nextDate: DateTime;
-
-    if (!schedule.lastAttendanceProcessedDate) {
-      // First deployment: avoid processing the entire historical database.
-      nextDate = yesterday;
-    } else {
-      const lastProcessed = DateTime.fromISO(
-        schedule.lastAttendanceProcessedDate,
-        { zone: timeZone },
+    if (activeProcessing) {
+      logger.warn(
+        { reason },
+        "Attendance processing is already running.",
       );
+      return Promise.resolve(false);
+    }
 
-      if (
-        !lastProcessed.isValid ||
-        lastProcessed.toFormat("yyyy-MM-dd") !==
-          schedule.lastAttendanceProcessedDate
-      ) {
-        throw new Error(
-          `Invalid last processed attendance date: ${schedule.lastAttendanceProcessedDate}`,
+    const currentRun = (async (): Promise<boolean> => {
+      try {
+        await processPendingAttendanceDates(() => isStopped);
+
+        logger.info(
+          { reason },
+          "Attendance recovery process completed.",
         );
-      }
 
-      nextDate = lastProcessed.plus({ days: 1 }).startOf("day");
-    }
-
-    while (
-      !isStopped &&
-      nextDate.toMillis() <= yesterday.toMillis()
-    ) {
-      const targetDate = nextDate.toFormat("yyyy-MM-dd");
-
-      // The service treats holidays and weekly days off as successful skips.
-      const result = await processDailyAttendance(targetDate, new Date());
-
-      // Persist progress only after processing the date succeeds.
-      const updateResult = await CompanySchedule.updateOne(
-        { _id: schedule._id },
-        { $set: { lastAttendanceProcessedDate: targetDate } },
-      );
-
-      if (updateResult.matchedCount !== 1) {
-        throw new Error(
-          "Could not save the last processed attendance date.",
+        return true;
+      } catch (error) {
+        logger.error(
+          { err: error, reason },
+          "Attendance processing failed.",
         );
+
+        return false;
       }
+    })();
 
-      logger.info(
-        { targetDate, timeZone, result },
-        "Attendance date processed successfully.",
-      );
+    activeProcessing = currentRun;
 
-      nextDate = nextDate.plus({ days: 1 });
-    }
+    void currentRun.finally(() => {
+      if (activeProcessing === currentRun) {
+        activeProcessing = undefined;
+      }
+    });
+
+    return currentRun;
   };
 
-  /**
-   * Runs the recovery process with single-instance protection.
-   */
-const runProcessing = (
-  reason: ProcessingReason,
-): Promise<boolean> => {
-  if (isStopped) {
-    return Promise.resolve(false);
-  }
-
-  if (activeProcessing) {
-    logger.warn(
-      { reason },
-      "Attendance processing is already running.",
-    );
-    return Promise.resolve(false);
-  }
-
-  const currentRun = (async (): Promise<boolean> => {
-    try {
-      await processPendingDates();
-
-      logger.info(
-        { reason },
-        "Attendance recovery process completed.",
-      );
-
-      return true;
-    } catch (error) {
-      logger.error(
-        { err: error, reason },
-        "Attendance processing failed.",
-      );
-
-      return false;
-    }
-  })();
-
-  activeProcessing = currentRun;
-
-  void currentRun.finally(() => {
-    if (activeProcessing === currentRun) {
-      activeProcessing = undefined;
-    }
-  });
-
-  return currentRun;
-};
-
-  /**
-   * Retries failed processing after a controlled delay.
-   */
   const scheduleRetry = (): void => {
     if (isStopped) {
       return;
@@ -168,9 +85,6 @@ const runProcessing = (
     }, RETRY_DELAY_MS);
   };
 
-  /**
-   * Schedules the next run at midnight in the company's timezone.
-   */
   const scheduleNextRun = async (): Promise<void> => {
     if (isStopped) {
       return;
@@ -226,19 +140,18 @@ const runProcessing = (
 
   logger.info("Attendance scheduler started.");
 
-return async () => {
-  isStopped = true;
+  return async () => {
+    isStopped = true;
 
-  if (timer) {
-    clearTimeout(timer);
-    timer = undefined;
-  }
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
 
-  // Allow the currently processing date to finish and save progress.
-  if (activeProcessing) {
-    await activeProcessing;
-  }
+    if (activeProcessing) {
+      await activeProcessing;
+    }
 
-  logger.info("Attendance scheduler stopped.");
-};
+    logger.info("Attendance scheduler stopped.");
+  };
 }

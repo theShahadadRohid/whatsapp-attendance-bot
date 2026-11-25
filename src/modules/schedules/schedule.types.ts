@@ -35,6 +35,9 @@ export interface CompanySchedule {
   checkOut: CheckOutRules;
   absence: AbsenceRules;
   lastAttendanceProcessedDate?: string;
+  
+  attendanceProcessingLockToken?: string;
+  attendanceProcessingLockExpiresAt?: Date;
 }
 
 export interface CreateHolidayInput {

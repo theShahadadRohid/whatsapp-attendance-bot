@@ -140,7 +140,16 @@ const companyScheduleSchema = new Schema<CompanyScheduleType>(
       validator: (value: string) =>
         /^\d{4}-\d{2}-\d{2}$/.test(value),
       message: "Last processed date must use YYYY-MM-DD format.",
-  },
+      },
+    },
+    attendanceProcessingLockToken: {
+  type: String,
+  required: false,
+},
+
+attendanceProcessingLockExpiresAt: {
+  type: Date,
+  required: false,
 },
   },
   {

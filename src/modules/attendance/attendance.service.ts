@@ -686,7 +686,6 @@ export async function listAttendanceRecords(
   };
 }
 
-
 interface EmployeeAttendanceHistoryOptions {
   from?: string;
   to?: string;

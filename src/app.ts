@@ -1,4 +1,5 @@
 
+import { processPendingAttendanceDates } from "./modules/attendance/attendance.processor.js";
 import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
@@ -7,7 +8,10 @@ import pinoHttp from "pino-http";
 import rateLimit from "express-rate-limit";
 
 import { appConfig } from "./config/app.config.js";
-import { isDatabaseConnected } from "./config/database.js";
+import {
+  connectToDatabase,
+  isDatabaseConnected,
+} from "./config/database.js";
 import { APP_NAME, REQUEST_ID_HEADER } from "./constants/app.constants.js";
 import {
   API_PREFIX,
@@ -25,6 +29,21 @@ import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
 import { employeeAttendanceRouter } from "./modules/attendance/employee-attendance.routes.js";
 
 export const app = express();
+
+let databaseConnection: Promise<boolean> | undefined;
+
+async function ensureDatabaseConnection(): Promise<void> {
+  if (isDatabaseConnected()) return;
+
+  if (!databaseConnection) {
+    databaseConnection = connectToDatabase().catch((error: unknown) => {
+      databaseConnection = undefined;
+      throw error;
+    });
+  }
+
+  await databaseConnection;
+}
 
 app.disable("x-powered-by");
 
@@ -45,6 +64,13 @@ app.use(
     },
   }),
 );
+
+// Connect to MongoDB after request logging is initialized.
+app.use((req, res, next) => {
+  void ensureDatabaseConnection()
+    .then(() => next())
+    .catch(next);
+});
 
 app.use(helmet());
 
@@ -67,7 +93,6 @@ app.use(
   }),
 );
 
-
 app.use(express.json({ limit: "1mb" }));
 
 const apiRateLimiter = rateLimit({
@@ -87,6 +112,38 @@ app.use(
   `${API_PREFIX}/employee/attendance`,
   employeeAttendanceRouter,
 );
+
+// Vercel Cron: daily attendance processing.
+app.get("/api/cron/attendance", async (req, res, next) => {
+  try {
+    const cronSecret = process.env.CRON_SECRET;
+
+    if (!cronSecret) {
+      res.status(500).json({
+        success: false,
+        message: "CRON_SECRET is not configured.",
+      });
+      return;
+    }
+
+    if (req.headers.authorization !== `Bearer ${cronSecret}`) {
+      res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+      return;
+    }
+
+    await processPendingAttendanceDates();
+
+    res.status(200).json({
+      success: true,
+      message: "Attendance processing completed.",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get(HEALTH_PATH, (_req, res) => {
   res.status(200).json({
