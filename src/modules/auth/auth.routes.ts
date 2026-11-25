@@ -4,6 +4,7 @@ import { Router } from "express";
 import {
   employeeLogin,
   getCurrentAdmin,
+  getCurrentEmployee,
   login,
 } from "./auth.controller.js";
 
@@ -12,8 +13,12 @@ import {
   loginSchema,
 } from "./auth.schema.js";
 
+import {
+  requireAuth,
+  requireEmployeeAuth,
+} from "../../common/middleware/auth.middleware.js";
+
 import { validateBody } from "../../common/middleware/validate.middleware.js";
-import { requireAuth } from "../../common/middleware/auth.middleware.js";
 
 const authRouter = Router();
 
@@ -26,6 +31,12 @@ authRouter.post(
   "/employee/login",
   validateBody(employeeLoginSchema),
   employeeLogin,
+);
+
+authRouter.get(
+  "/employee/me",
+  requireEmployeeAuth,
+  getCurrentEmployee,
 );
 
 export { authRouter };

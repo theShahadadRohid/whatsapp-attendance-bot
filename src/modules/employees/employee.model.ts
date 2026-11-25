@@ -62,6 +62,18 @@ const employeeSchema = new Schema(
       default: undefined,
     },
 
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      required: true,
+    },
+
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+      required: true,
+    },
+
     isActive: {
       type: Boolean,
       default: true,

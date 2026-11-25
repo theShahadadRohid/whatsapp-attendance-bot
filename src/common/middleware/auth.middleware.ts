@@ -11,12 +11,19 @@ import {
 } from "../../modules/auth/admin.model.js";
 import type { AuthenticatedRequest } from "../../modules/auth/auth.types.js";
 
-interface AccessTokenPayload extends JwtPayload {
+interface AdminAccessTokenPayload extends JwtPayload {
   sub: string;
   accountType: "admin";
   role: AdminRole;
 }
 
+interface EmployeeAccessTokenPayload extends JwtPayload {
+  sub: string;
+  accountType: "employee";
+  role: "employee";
+}
+
+// Admin authentication
 export const requireAuth: RequestHandler = (req, _res, next) => {
   const authenticatedReq = req as AuthenticatedRequest;
   const authorization = req.headers.authorization;
@@ -53,7 +60,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
       );
     }
 
-    const payload = decoded as AccessTokenPayload;
+    const payload = decoded as AdminAccessTokenPayload;
 
     authenticatedReq.auth = {
       accountType: "admin",
@@ -73,6 +80,63 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
   }
 };
 
+// Employee authentication
+export const requireEmployeeAuth: RequestHandler = (req, _res, next) => {
+  const authenticatedReq = req as AuthenticatedRequest;
+  const authorization = req.headers.authorization;
+
+  if (!authorization?.startsWith("Bearer ")) {
+    return next(
+      new AppError("Authentication required.", 401, "UNAUTHENTICATED")
+    );
+  }
+
+  const token = authorization.slice("Bearer ".length).trim();
+
+  if (!token) {
+    return next(
+      new AppError("Authentication required.", 401, "UNAUTHENTICATED")
+    );
+  }
+
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET, {
+      issuer: APP_NAME,
+      audience: APP_NAME
+    });
+
+    if (
+      typeof decoded === "string" ||
+      !decoded.sub ||
+      decoded.accountType !== "employee" ||
+      decoded.role !== "employee"
+    ) {
+      return next(
+        new AppError("Invalid access token.", 401, "INVALID_ACCESS_TOKEN")
+      );
+    }
+
+    const payload = decoded as EmployeeAccessTokenPayload;
+
+    authenticatedReq.auth = {
+      accountType: "employee",
+      employeeId: payload.sub,
+      role: "employee"
+    };
+
+    next();
+  } catch {
+    next(
+      new AppError(
+        "Invalid or expired access token.",
+        401,
+        "INVALID_ACCESS_TOKEN"
+      )
+    );
+  }
+};
+
+// Super Admin authorization
 export const requireSuperAdmin: RequestHandler = (req, _res, next) => {
   const authenticatedReq = req as AuthenticatedRequest;
   const user = authenticatedReq.auth;
