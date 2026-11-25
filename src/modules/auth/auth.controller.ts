@@ -30,7 +30,7 @@ export const getCurrentAdmin: RequestHandler = (req, res) => {
   res.status(200).json({
     success: true,
     data: {
-      id: user.adminId,
+      id: user.accountType === "admin" ? user.adminId : undefined,
       role: user.role
     }
   });
