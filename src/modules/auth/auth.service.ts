@@ -11,6 +11,13 @@ import { APP_NAME } from "../../constants/app.constants.js";
 import { EmployeeModel } from "../employees/employee.model.js";
 import type { EmployeeLoginInput } from "./auth.schema.js";
 
+import { PasswordResetRequestModel } from "./password-reset-request.model.js";
+
+import type {
+  ChangeEmployeePasswordInput,
+  ForgotEmployeePasswordInput,
+} from "./auth.schema.js";
+
 export async function loginAdmin(input: LoginInput) {
   const admin = await AdminModel.findOne({
     email: input.email
@@ -64,8 +71,6 @@ export async function loginAdmin(input: LoginInput) {
   };
 }
 
-
-
 export async function loginEmployee(input: EmployeeLoginInput) {
   const employee = await EmployeeModel.findOne({
     phoneNumber: input.phoneNumber,
@@ -93,18 +98,19 @@ export async function loginEmployee(input: EmployeeLoginInput) {
   }
 
   const accessToken = jwt.sign(
-    {
-      accountType: "employee",
-      role: "employee",
-    },
-    env.JWT_SECRET,
-    {
-      subject: employee.id,
-      issuer: APP_NAME,
-      audience: APP_NAME,
-      expiresIn: "15m",
-    },
-  );
+  {
+    accountType: "employee",
+    role: "employee",
+    tokenVersion: employee.tokenVersion ?? 0,
+  },
+  env.JWT_SECRET,
+  {
+    subject: employee.id,
+    issuer: APP_NAME,
+    audience: APP_NAME,
+    expiresIn: "15m",
+  },
+);
 
   return {
     accessToken,
@@ -117,6 +123,234 @@ export async function loginEmployee(input: EmployeeLoginInput) {
       designation: employee.designation,
       phoneNumber: employee.phoneNumber,
       officialEmail: employee.officialEmail,
+      mustChangePassword: employee.mustChangePassword,
     },
   };
+}
+
+export async function changeEmployeePassword(
+  employeeId: string,
+  input: ChangeEmployeePasswordInput,
+) {
+  const employee = await EmployeeModel.findById(employeeId).select(
+    "+passwordHash",
+  );
+
+  if (!employee || !employee.isActive || !employee.passwordHash) {
+    throw new AppError(
+      "Employee account not found or unavailable.",
+      404,
+      "EMPLOYEE_NOT_FOUND",
+    );
+  }
+
+  const currentPasswordMatches = await argon2.verify(
+    employee.passwordHash,
+    input.currentPassword,
+  );
+
+  if (!currentPasswordMatches) {
+    throw new AppError(
+      "Current password is incorrect.",
+      400,
+      "INCORRECT_CURRENT_PASSWORD",
+    );
+  }
+
+  if (
+    await argon2.verify(employee.passwordHash, input.newPassword)
+  ) {
+    throw new AppError(
+      "New password must be different from the current password.",
+      400,
+      "PASSWORD_UNCHANGED",
+    );
+  }
+
+  const passwordHash = await argon2.hash(input.newPassword);
+
+  const result = await EmployeeModel.updateOne(
+    {
+      _id: employeeId,
+      passwordHash: employee.passwordHash,
+    },
+    {
+      $set: {
+        passwordHash,
+        mustChangePassword: false,
+      },
+      $inc: {
+        tokenVersion: 1,
+      },
+    },
+  );
+
+  if (result.modifiedCount !== 1) {
+    throw new AppError(
+      "Password could not be updated. Please try again.",
+      409,
+      "PASSWORD_UPDATE_CONFLICT",
+    );
+  }
+
+  return {
+    message: "Password changed successfully. Please log in again.",
+  };
+}
+
+export async function requestEmployeePasswordReset(
+  input: ForgotEmployeePasswordInput,
+) {
+  const genericResponse = {
+    message:
+      "If an employee account exists for this phone number, a password reset request has been submitted.",
+  };
+
+  const employee = await EmployeeModel.findOne({
+    phoneNumber: input.phoneNumber,
+    isActive: true,
+  }).select("+passwordHash");
+
+  if (!employee || !employee.passwordHash) {
+    return genericResponse;
+  }
+
+  const existingRequest = await PasswordResetRequestModel.findOne({
+    employeeId: employee._id,
+  });
+
+  if (
+    existingRequest?.status === "pending" ||
+    existingRequest?.status === "processing"
+  ) {
+    return genericResponse;
+  }
+
+  await PasswordResetRequestModel.findOneAndUpdate(
+    { employeeId: employee._id },
+    {
+      $set: {
+        status: "pending",
+        requestedAt: new Date(),
+      },
+      $unset: {
+        resolvedAt: 1,
+        resolvedBy: 1,
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      runValidators: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+
+  return genericResponse;
+}
+
+export async function listPasswordResetRequests() {
+  return PasswordResetRequestModel.find({
+    status: "pending",
+  })
+    .populate(
+      "employeeId",
+      "employeeCode fullName designation officialEmail phoneNumber",
+    )
+    .sort({ requestedAt: 1 })
+    .lean();
+}
+
+export async function adminResetEmployeePassword(
+  requestId: string,
+  adminId: string,
+  temporaryPassword: string,
+) {
+  const request = await PasswordResetRequestModel.findOneAndUpdate(
+    {
+      _id: requestId,
+      status: "pending",
+    },
+    {
+      $set: {
+        status: "processing",
+      },
+    },
+    {
+      new: true,
+    },
+  );
+
+  if (!request) {
+    throw new AppError(
+      "Pending password reset request not found.",
+      404,
+      "RESET_REQUEST_NOT_FOUND",
+    );
+  }
+
+  try {
+    const passwordHash = await argon2.hash(temporaryPassword);
+
+    const employee = await EmployeeModel.findOneAndUpdate(
+      {
+        _id: request.employeeId,
+        isActive: true,
+        passwordHash: { $exists: true },
+      },
+      {
+        $set: {
+          passwordHash,
+          mustChangePassword: true,
+        },
+        $inc: {
+          tokenVersion: 1,
+        },
+      },
+      {
+        new: true,
+      },
+    );
+
+    if (!employee) {
+      throw new AppError(
+        "Employee account not found or inactive.",
+        404,
+        "EMPLOYEE_NOT_FOUND",
+      );
+    }
+
+    await PasswordResetRequestModel.updateOne(
+      {
+        _id: request._id,
+        status: "processing",
+      },
+      {
+        $set: {
+          status: "resolved",
+          resolvedAt: new Date(),
+          resolvedBy: adminId,
+        },
+      },
+    );
+
+    return {
+      message:
+        "Temporary password created successfully. The employee must change it after logging in.",
+    };
+  } catch (error) {
+    await PasswordResetRequestModel.updateOne(
+      {
+        _id: request._id,
+        status: "processing",
+      },
+      {
+        $set: {
+          status: "pending",
+        },
+      },
+    );
+
+    throw error;
+  }
 }
