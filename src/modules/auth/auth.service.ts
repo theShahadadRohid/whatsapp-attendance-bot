@@ -226,25 +226,46 @@ export async function requestEmployeePasswordReset(
     return genericResponse;
   }
 
-  await PasswordResetRequestModel.findOneAndUpdate(
-    { employeeId: employee._id },
-    {
-      $set: {
-        status: "pending",
-        requestedAt: new Date(),
+  // Reuse an already resolved request.
+  if (existingRequest?.status === "resolved") {
+    await PasswordResetRequestModel.updateOne(
+      {
+        _id: existingRequest._id,
+        status: "resolved",
       },
-      $unset: {
-        resolvedAt: 1,
-        resolvedBy: 1,
+      {
+        $set: {
+          status: "pending",
+          requestedAt: new Date(),
+        },
+        $unset: {
+          resolvedAt: 1,
+          resolvedBy: 1,
+        },
       },
-    },
-    {
-      upsert: true,
-      new: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
-    },
-  );
+    );
+
+    return genericResponse;
+  }
+
+  // Create a new request if none exists.
+  try {
+    await PasswordResetRequestModel.create({
+      employeeId: employee._id,
+    });
+  } catch (error) {
+    // A duplicate request may have been created simultaneously.
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === 11000
+    ) {
+      return genericResponse;
+    }
+
+    throw error;
+  }
 
   return genericResponse;
 }

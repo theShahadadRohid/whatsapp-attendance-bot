@@ -93,6 +93,7 @@ export const getCurrentEmployee: RequestHandler = async (
         phoneNumber: employee.phoneNumber,
         employmentType: employee.employmentType,
         department: employee.department,
+        mustChangePassword: employee.mustChangePassword,
       },
     });
   } catch (error) {
