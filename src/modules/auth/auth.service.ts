@@ -8,6 +8,9 @@ import { AppError } from "../../common/errors/app-error.js";
 import { env } from "../../config/env.js";
 import { APP_NAME } from "../../constants/app.constants.js";
 
+import { EmployeeModel } from "../employees/employee.model.js";
+import type { EmployeeLoginInput } from "./auth.schema.js";
+
 export async function loginAdmin(input: LoginInput) {
   const admin = await AdminModel.findOne({
     email: input.email
@@ -58,5 +61,62 @@ export async function loginAdmin(input: LoginInput) {
       email: admin.email,
       role: admin.role
     }
+  };
+}
+
+
+
+export async function loginEmployee(input: EmployeeLoginInput) {
+  const employee = await EmployeeModel.findOne({
+    phoneNumber: input.phoneNumber,
+  }).select("+passwordHash");
+
+  if (!employee || !employee.isActive || !employee.passwordHash) {
+    throw new AppError(
+      "Invalid phone number or password.",
+      401,
+      "INVALID_CREDENTIALS",
+    );
+  }
+
+  const passwordMatches = await argon2.verify(
+    employee.passwordHash,
+    input.password,
+  );
+
+  if (!passwordMatches) {
+    throw new AppError(
+      "Invalid phone number or password.",
+      401,
+      "INVALID_CREDENTIALS",
+    );
+  }
+
+  const accessToken = jwt.sign(
+    {
+      accountType: "employee",
+      role: "employee",
+    },
+    env.JWT_SECRET,
+    {
+      subject: employee.id,
+      issuer: APP_NAME,
+      audience: APP_NAME,
+      expiresIn: "15m",
+    },
+  );
+
+  return {
+    accessToken,
+    tokenType: "Bearer",
+    expiresIn: 900,
+    employee: {
+      id: employee.id,
+      employeeCode: employee.employeeCode,
+      fullName: employee.fullName,
+      designation: employee.designation,
+      phoneNumber: employee.phoneNumber,
+      officialEmail: employee.officialEmail,
+    },
   };
 }
