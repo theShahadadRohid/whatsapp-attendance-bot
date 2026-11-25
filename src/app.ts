@@ -166,3 +166,6 @@ app.get(READINESS_PATH, (_req, res) => {
 
 app.use(notFoundMiddleware);
 app.use(errorHandler);
+
+
+export default app;

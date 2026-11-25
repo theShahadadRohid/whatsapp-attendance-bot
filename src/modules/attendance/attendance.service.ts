@@ -999,7 +999,10 @@ export async function checkInEmployeeFromOffice(
   employeeId: string,
   input: CheckInPayload = {},
   now = new Date(),
+  
 ) {
+
+  console.log(input.location)
   if (!input.location) {
     throw new AppError(
       "Location is required for check-in.",
