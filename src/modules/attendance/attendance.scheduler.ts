@@ -14,7 +14,7 @@ export async function startAttendanceScheduler(): Promise<
 > {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let isStopped = false;
-  let isRunning = false;
+  // let isRunning = false;
   let activeProcessing: Promise<boolean> | undefined;
 
   /**

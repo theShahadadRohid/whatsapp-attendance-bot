@@ -2,14 +2,6 @@
 import { Schema, model, type InferSchemaType } from "mongoose";
 import { EMPLOYMENT_TYPES } from "./employee.types.js";
 
-const locationSchema = new Schema(
-  {
-    latitude: { type: Number, required: true },
-    longitude: { type: Number, required: true },
-  },
-  { _id: false },
-);
-
 const employeeSchema = new Schema(
   {
     employeeCode: {
@@ -28,18 +20,27 @@ const employeeSchema = new Schema(
       maxlength: 100,
     },
 
+    designation: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 100,
+    },
+
+    officialEmail: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      lowercase: true,
+      maxlength: 254,
+    },
+
     phoneNumber: {
       type: String,
       required: true,
       unique: true,
       trim: true,
-    },
-
-    whatsappBusinessScopedUserId: {
-      type: String,
-      trim: true,
-      sparse: true,
-      unique: true,
     },
 
     employmentType: {
@@ -59,17 +60,6 @@ const employeeSchema = new Schema(
       type: Boolean,
       default: true,
       required: true,
-    },
-
-    pendingAttendanceAction: {
-      type: String,
-      enum: ["check_in", "check_out"],
-    },
-
-    pendingAttendanceAt: Date,
-
-    pendingAttendanceLocation: {
-      type: locationSchema,
     },
   },
   {
