@@ -56,6 +56,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
     const payload = decoded as AccessTokenPayload;
 
     authenticatedReq.auth = {
+      accountType: "admin",
       adminId: payload.sub,
       role: payload.role
     };
