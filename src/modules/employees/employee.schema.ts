@@ -58,3 +58,15 @@ export const updateEmployeeSchema = z
 export const employeeIdSchema = z.string().regex(/^[a-f\d]{24}$/i, {
   message: "Invalid employee ID.",
 });
+
+
+export const createEmployeeAccountSchema = z.object({
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters.")
+    .max(128, "Password cannot exceed 128 characters."),
+});
+
+export type CreateEmployeeAccountInput = z.infer<
+  typeof createEmployeeAccountSchema
+>;

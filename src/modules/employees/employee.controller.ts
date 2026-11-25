@@ -4,6 +4,7 @@ import type { RequestHandler } from "express";
 import { AppError } from "../../common/errors/app-error.js";
 import {
   createEmployee,
+  createEmployeeAccount,
   deactivateEmployee,
   getEmployeeById,
   listEmployees,
@@ -131,6 +132,26 @@ export const deactivateEmployeeController: RequestHandler = async (
 
     res.status(200).json({
       message: "Employee deactivated successfully.",
+      data: { employee },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createEmployeeAccountController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const employee = await createEmployeeAccount(
+      req.params.id as string,
+      req.body.password,
+    );
+
+    res.status(201).json({
+      message: "Employee login account created successfully.",
       data: { employee },
     });
   } catch (error) {

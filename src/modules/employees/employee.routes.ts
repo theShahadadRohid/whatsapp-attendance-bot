@@ -1,10 +1,8 @@
-
 import { Router } from "express";
-
 import { requireAuth } from "../../common/middleware/auth.middleware.js";
 import { validateBody } from "../../common/middleware/validate.middleware.js";
-
 import {
+  createEmployeeAccountController,
   createEmployeeController,
   deactivateEmployeeController,
   getEmployeeController,
@@ -13,6 +11,7 @@ import {
 } from "./employee.controller.js";
 
 import {
+  createEmployeeAccountSchema,
   createEmployeeSchema,
   employeeIdSchema,
   updateEmployeeSchema,
@@ -80,6 +79,23 @@ employeeRouter.patch(
     next();
   },
   deactivateEmployeeController,
+);
+
+// Create employee login account.
+employeeRouter.post(
+  "/:id/account",
+  (req, _res, next) => {
+    const result = employeeIdSchema.safeParse(req.params.id);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+
+    next();
+  },
+  validateBody(createEmployeeAccountSchema),
+  createEmployeeAccountController,
 );
 
 export { employeeRouter };
