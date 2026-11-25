@@ -3,7 +3,12 @@ import type { RequestHandler } from "express";
 
 import { loginAdmin, loginEmployee } from "./auth.service.js";
 import type { AuthenticatedRequest } from "./auth.types.js";
-
+import {
+  changeEmployeePassword,
+  requestEmployeePasswordReset,
+  listPasswordResetRequests,
+  adminResetEmployeePassword,
+} from "./auth.service.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { getEmployeeById } from "../employees/employee.service.js";
 
@@ -89,6 +94,110 @@ export const getCurrentEmployee: RequestHandler = async (
         employmentType: employee.employmentType,
         department: employee.department,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Employee changes their password
+export const changeEmployeePasswordController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const authenticatedReq = req as AuthenticatedRequest;
+    const user = authenticatedReq.auth;
+
+    if (!user || user.accountType !== "employee") {
+      throw new AppError(
+        "Employee authentication required.",
+        401,
+        "UNAUTHENTICATED",
+      );
+    }
+
+    const result = await changeEmployeePassword(
+      user.employeeId,
+      req.body,
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Employee submits a forgotten-password request
+export const forgotEmployeePasswordController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const result = await requestEmployeePasswordReset(req.body);
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin views pending reset requests
+export const listPasswordResetRequestsController: RequestHandler = async (
+  _req,
+  res,
+  next,
+) => {
+  try {
+    const requests = await listPasswordResetRequests();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        requests,
+        total: requests.length,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin resets an employee password
+export const adminResetEmployeePasswordController: RequestHandler = async (
+  req,
+  res,
+  next,
+) => {
+  try {
+    const authenticatedReq = req as AuthenticatedRequest;
+    const user = authenticatedReq.auth;
+
+    if (!user || user.accountType !== "admin") {
+      throw new AppError(
+        "Admin authentication required.",
+        401,
+        "UNAUTHENTICATED",
+      );
+    }
+
+    const result = await adminResetEmployeePassword(
+      req.params.requestId as string,
+      user.adminId,
+      req.body.temporaryPassword,
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
     });
   } catch (error) {
     next(error);

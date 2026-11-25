@@ -1,7 +1,7 @@
 
 import type { RequestHandler } from "express";
 import jwt, { type JwtPayload } from "jsonwebtoken";
-
+import { EmployeeModel } from "../../modules/employees/employee.model.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { env } from "../../config/env.js";
 import { APP_NAME } from "../../constants/app.constants.js";
@@ -21,6 +21,7 @@ interface EmployeeAccessTokenPayload extends JwtPayload {
   sub: string;
   accountType: "employee";
   role: "employee";
+  tokenVersion: number;
 }
 
 // Admin authentication
@@ -80,14 +81,17 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
   }
 };
 
-// Employee authentication
-export const requireEmployeeAuth: RequestHandler = (req, _res, next) => {
+export const requireEmployeeAuth: RequestHandler = async (
+  req,
+  _res,
+  next,
+) => {
   const authenticatedReq = req as AuthenticatedRequest;
   const authorization = req.headers.authorization;
 
   if (!authorization?.startsWith("Bearer ")) {
     return next(
-      new AppError("Authentication required.", 401, "UNAUTHENTICATED")
+      new AppError("Authentication required.", 401, "UNAUTHENTICATED"),
     );
   }
 
@@ -95,33 +99,58 @@ export const requireEmployeeAuth: RequestHandler = (req, _res, next) => {
 
   if (!token) {
     return next(
-      new AppError("Authentication required.", 401, "UNAUTHENTICATED")
+      new AppError("Authentication required.", 401, "UNAUTHENTICATED"),
     );
   }
 
   try {
     const decoded = jwt.verify(token, env.JWT_SECRET, {
       issuer: APP_NAME,
-      audience: APP_NAME
+      audience: APP_NAME,
     });
 
     if (
       typeof decoded === "string" ||
       !decoded.sub ||
       decoded.accountType !== "employee" ||
-      decoded.role !== "employee"
+      decoded.role !== "employee" ||
+      !Number.isInteger(decoded.tokenVersion)
     ) {
       return next(
-        new AppError("Invalid access token.", 401, "INVALID_ACCESS_TOKEN")
+        new AppError("Invalid access token.", 401, "INVALID_ACCESS_TOKEN"),
       );
     }
 
     const payload = decoded as EmployeeAccessTokenPayload;
 
+    const employee = await EmployeeModel.findById(payload.sub)
+      .select("isActive tokenVersion")
+      .lean();
+
+    if (!employee || !employee.isActive) {
+      return next(
+        new AppError(
+          "Employee account is unavailable.",
+          401,
+          "EMPLOYEE_UNAVAILABLE",
+        ),
+      );
+    }
+
+    if ((employee.tokenVersion ?? 0) !== payload.tokenVersion) {
+      return next(
+        new AppError(
+          "Your session has expired. Please log in again.",
+          401,
+          "SESSION_INVALIDATED",
+        ),
+      );
+    }
+
     authenticatedReq.auth = {
       accountType: "employee",
       employeeId: payload.sub,
-      role: "employee"
+      role: "employee",
     };
 
     next();
@@ -130,8 +159,8 @@ export const requireEmployeeAuth: RequestHandler = (req, _res, next) => {
       new AppError(
         "Invalid or expired access token.",
         401,
-        "INVALID_ACCESS_TOKEN"
-      )
+        "INVALID_ACCESS_TOKEN",
+      ),
     );
   }
 };
