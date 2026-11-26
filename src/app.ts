@@ -45,6 +45,7 @@ async function ensureDatabaseConnection(): Promise<void> {
   await databaseConnection;
 }
 
+
 app.disable("x-powered-by");
 
 app.use(
@@ -65,15 +66,8 @@ app.use(
   }),
 );
 
-// Connect to MongoDB after request logging is initialized.
-app.use((req, res, next) => {
-  void ensureDatabaseConnection()
-    .then(() => next())
-    .catch(next);
-});
-
-app.use(helmet());
-
+// Handle CORS before database connection.
+// This allows browser preflight requests without connecting to MongoDB.
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -90,10 +84,21 @@ app.use(
         ),
       );
     },
+    credentials: true,
   }),
 );
 
+// Connect to MongoDB after request logging and CORS.
+app.use((req, res, next) => {
+  void ensureDatabaseConnection()
+    .then(() => next())
+    .catch(next);
+});
+
+app.use(helmet());
+
 app.use(express.json({ limit: "1mb" }));
+
 
 const apiRateLimiter = rateLimit({
   windowMs: appConfig.apiRateLimit.windowMs,
