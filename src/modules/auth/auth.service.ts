@@ -61,7 +61,7 @@ export async function loginAdmin(input: LoginInput) {
   return {
     accessToken,
     tokenType: "Bearer",
-    expiresIn: 900,
+    expiresIn: 1800,
     admin: {
       id: admin.id,
       fullName: admin.fullName,
@@ -115,7 +115,7 @@ export async function loginEmployee(input: EmployeeLoginInput) {
   return {
     accessToken,
     tokenType: "Bearer",
-    expiresIn: 900,
+    expiresIn: 1800,
     employee: {
       id: employee.id,
       employeeCode: employee.employeeCode,
